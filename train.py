@@ -1029,7 +1029,7 @@ while True:
             lrm = get_lr_multiplier(progress)
             trainer.lr = args.lr * lrm
             if args.epsilon is None:
-                trainer.epsilon = trainer.lr
+                trainer.epsilon = max(trainer.lr, 1e-8)
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
 
