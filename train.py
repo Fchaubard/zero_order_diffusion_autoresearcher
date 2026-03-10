@@ -1136,8 +1136,8 @@ total_images = step * args.total_batch_size
 
 # Final eval
 model.eval()
-with autocast_ctx:
-    val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
+model_for_eval = model._orig_mod.float() if hasattr(model, '_orig_mod') else model.float()
+val_fid = evaluate_fid(model_for_eval, flow_matching, args.device_batch_size)
 
 # Final summary
 t_end = time.time()
