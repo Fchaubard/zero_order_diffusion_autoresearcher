@@ -1,12 +1,12 @@
 """
-One-time data preparation for autoresearch experiments.
-Downloads data shards and trains a BPE tokenizer.
+One-time data preparation for diffusion experiments.
+Downloads ImageNet ILSVRC2012 and computes FID reference statistics.
 
 Usage:
-    python prepare.py                  # full prep (download + tokenizer)
-    python prepare.py --num-shards 8   # download only 8 shards (for testing)
+    python prepare.py                              # full prep (download + FID stats)
+    python prepare.py --data-dir /path/to/imagenet  # use local ImageNet directory
 
-Data and tokenizer are stored in ~/.cache/autoresearch/.
+Data and statistics are stored in ~/.cache/autoresearch/.
 """
 
 import os
@@ -14,22 +14,25 @@ import sys
 import time
 import math
 import argparse
-import pickle
-from multiprocessing import Pool
 
-import requests
-import pyarrow.parquet as pq
-import rustbpe
-import tiktoken
+import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+from torchvision.models import inception_v3, Inception_V3_Weights
+from torch.utils.data import DataLoader, Dataset
+from scipy import linalg
 
 # ---------------------------------------------------------------------------
 # Constants (fixed, do not modify)
 # ---------------------------------------------------------------------------
 
-MAX_SEQ_LEN = 2048       # context length
-TIME_BUDGET = 300        # training time budget in seconds (5 minutes)
-EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
+IMG_SIZE = 64            # image resolution (64x64)
+IMG_CHANNELS = 3         # RGB
+NUM_CLASSES = 1000       # ImageNet classes
+TIME_BUDGET = 3600       # training time budget in seconds (1 hour)
+FID_NUM_SAMPLES = 10000  # number of samples for FID evaluation
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -37,352 +40,337 @@ EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch")
 DATA_DIR = os.path.join(CACHE_DIR, "data")
-TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
-BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
-MAX_SHARD = 6542 # the last datashard is shard_06542.parquet
-VAL_SHARD = MAX_SHARD  # pinned validation shard (shard_06542)
-VAL_FILENAME = f"shard_{VAL_SHARD:05d}.parquet"
-VOCAB_SIZE = 8192
-
-# BPE split pattern (GPT-4 style, with \p{N}{1,2} instead of {1,3})
-SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
-
-SPECIAL_TOKENS = [f"<|reserved_{i}|>" for i in range(4)]
-BOS_TOKEN = "<|reserved_0|>"
+STATS_DIR = os.path.join(CACHE_DIR, "stats")
 
 # ---------------------------------------------------------------------------
 # Data download
 # ---------------------------------------------------------------------------
 
-def download_single_shard(index):
-    """Download one parquet shard with retries. Returns True on success."""
-    filename = f"shard_{index:05d}.parquet"
-    filepath = os.path.join(DATA_DIR, filename)
-    if os.path.exists(filepath):
-        return True
+def download_data(data_dir=None):
+    """Download ImageNet ILSVRC2012 via HuggingFace datasets (cached, only downloads once)."""
+    from datasets import load_dataset
 
-    url = f"{BASE_URL}/{filename}"
-    max_attempts = 5
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            temp_path = filepath + ".tmp"
-            with open(temp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-            os.rename(temp_path, filepath)
-            print(f"  Downloaded {filename}")
-            return True
-        except (requests.RequestException, IOError) as e:
-            print(f"  Attempt {attempt}/{max_attempts} failed for {filename}: {e}")
-            for path in [filepath + ".tmp", filepath]:
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-    return False
-
-
-def download_data(num_shards, download_workers=8):
-    """Download training shards + pinned validation shard."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    num_train = min(num_shards, MAX_SHARD)
-    ids = list(range(num_train))
-    if VAL_SHARD not in ids:
-        ids.append(VAL_SHARD)
-
-    # Count what's already downloaded
-    existing = sum(1 for i in ids if os.path.exists(os.path.join(DATA_DIR, f"shard_{i:05d}.parquet")))
-    if existing == len(ids):
-        print(f"Data: all {len(ids)} shards already downloaded at {DATA_DIR}")
+    target_dir = data_dir if data_dir else DATA_DIR
+    marker = os.path.join(target_dir, ".imagenet_ready")
+    if os.path.exists(marker):
+        print(f"Data: ImageNet already downloaded at {target_dir}")
         return
 
-    needed = len(ids) - existing
-    print(f"Data: downloading {needed} shards ({existing} already exist)...")
+    os.makedirs(target_dir, exist_ok=True)
 
-    workers = max(1, min(download_workers, needed))
-    with Pool(processes=workers) as pool:
-        results = pool.map(download_single_shard, ids)
+    print("Data: downloading ImageNet ILSVRC2012 from HuggingFace...")
+    print("  (Requires accepting terms at https://huggingface.co/datasets/ILSVRC/imagenet-1k)")
+    print("  (Set HF_TOKEN env var or run `huggingface-cli login` first)")
 
-    ok = sum(1 for r in results if r)
-    print(f"Data: {ok}/{len(ids)} shards ready at {DATA_DIR}")
-
-# ---------------------------------------------------------------------------
-# Tokenizer training
-# ---------------------------------------------------------------------------
-
-def list_parquet_files():
-    """Return sorted list of parquet file paths in the data directory."""
-    files = sorted(f for f in os.listdir(DATA_DIR) if f.endswith(".parquet") and not f.endswith(".tmp"))
-    return [os.path.join(DATA_DIR, f) for f in files]
-
-
-def text_iterator(max_chars=1_000_000_000, doc_cap=10_000):
-    """Yield documents from training split (all shards except pinned val shard)."""
-    parquet_paths = [p for p in list_parquet_files() if not p.endswith(VAL_FILENAME)]
-    nchars = 0
-    for filepath in parquet_paths:
-        pf = pq.ParquetFile(filepath)
-        for rg_idx in range(pf.num_row_groups):
-            rg = pf.read_row_group(rg_idx)
-            for text in rg.column("text").to_pylist():
-                doc = text[:doc_cap] if len(text) > doc_cap else text
-                nchars += len(doc)
-                yield doc
-                if nchars >= max_chars:
-                    return
-
-
-def train_tokenizer():
-    """Train BPE tokenizer using rustbpe, save as tiktoken pickle."""
-    tokenizer_pkl = os.path.join(TOKENIZER_DIR, "tokenizer.pkl")
-    token_bytes_path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
-
-    if os.path.exists(tokenizer_pkl) and os.path.exists(token_bytes_path):
-        print(f"Tokenizer: already trained at {TOKENIZER_DIR}")
-        return
-
-    os.makedirs(TOKENIZER_DIR, exist_ok=True)
-
-    parquet_files = list_parquet_files()
-    if len(parquet_files) < 2:
-        print("Tokenizer: need at least 2 data shards (1 train + 1 val). Download more data first.")
-        sys.exit(1)
-
-    # --- Train with rustbpe ---
-    print("Tokenizer: training BPE tokenizer...")
     t0 = time.time()
+    # Download both splits — cached by HF datasets library
+    load_dataset("ILSVRC/imagenet-1k", split="train", cache_dir=target_dir)
+    load_dataset("ILSVRC/imagenet-1k", split="validation", cache_dir=target_dir)
 
-    tokenizer = rustbpe.Tokenizer()
-    vocab_size_no_special = VOCAB_SIZE - len(SPECIAL_TOKENS)
-    tokenizer.train_from_iterator(text_iterator(), vocab_size_no_special, pattern=SPLIT_PATTERN)
-
-    # Build tiktoken encoding from trained merges
-    pattern = tokenizer.get_pattern()
-    mergeable_ranks = {bytes(k): v for k, v in tokenizer.get_mergeable_ranks()}
-    tokens_offset = len(mergeable_ranks)
-    special_tokens = {name: tokens_offset + i for i, name in enumerate(SPECIAL_TOKENS)}
-    enc = tiktoken.Encoding(
-        name="rustbpe",
-        pat_str=pattern,
-        mergeable_ranks=mergeable_ranks,
-        special_tokens=special_tokens,
-    )
-
-    # Save tokenizer
-    with open(tokenizer_pkl, "wb") as f:
-        pickle.dump(enc, f)
+    with open(marker, "w") as f:
+        f.write("ready\n")
 
     t1 = time.time()
-    print(f"Tokenizer: trained in {t1 - t0:.1f}s, saved to {tokenizer_pkl}")
+    print(f"Data: downloaded in {t1 - t0:.1f}s to {target_dir}")
 
-    # --- Build token_bytes lookup for BPB evaluation ---
-    print("Tokenizer: building token_bytes lookup...")
-    special_set = set(SPECIAL_TOKENS)
-    token_bytes_list = []
-    for token_id in range(enc.n_vocab):
-        token_str = enc.decode([token_id])
-        if token_str in special_set:
-            token_bytes_list.append(0)
-        else:
-            token_bytes_list.append(len(token_str.encode("utf-8")))
-    token_bytes_tensor = torch.tensor(token_bytes_list, dtype=torch.int32)
-    torch.save(token_bytes_tensor, token_bytes_path)
-    print(f"Tokenizer: saved token_bytes to {token_bytes_path}")
+# ---------------------------------------------------------------------------
+# FID reference statistics
+# ---------------------------------------------------------------------------
+
+class InceptionFeatureExtractor:
+    """Extract 2048-dim pool features from InceptionV3 for FID computation."""
+
+    def __init__(self, device="cuda"):
+        self.device = device
+        model = inception_v3(weights=Inception_V3_Weights.DEFAULT)
+        model.fc = nn.Identity()  # Remove classification head, expose 2048-dim pool features
+        model.eval()
+        self.model = model.to(device)
+        self.transform = transforms.Compose([
+            transforms.Resize((299, 299), antialias=True),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225]),
+        ])
+
+    @torch.no_grad()
+    def extract_features(self, images):
+        """Extract features from a batch of images in [0, 1] range."""
+        images = self.transform(images.to(self.device))
+        features = self.model(images)
+        return features.cpu().numpy()
+
+
+def compute_fid_from_stats(mu1, sigma1, mu2, sigma2, eps=1e-6):
+    """Compute Frechet Inception Distance between two Gaussians."""
+    diff = mu1 - mu2
+    covmean, _ = linalg.sqrtm(sigma1 @ sigma2, disp=False)
+    if not np.isfinite(covmean).all():
+        offset = np.eye(sigma1.shape[0]) * eps
+        covmean = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    fid = diff @ diff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
+    return float(fid)
+
+
+def compute_reference_stats(data_dir=None):
+    """Compute and cache InceptionV3 statistics for validation images."""
+    mu_path = os.path.join(STATS_DIR, "fid_mu.npy")
+    sigma_path = os.path.join(STATS_DIR, "fid_sigma.npy")
+
+    if os.path.exists(mu_path) and os.path.exists(sigma_path):
+        print(f"FID stats: already computed at {STATS_DIR}")
+        return
+
+    os.makedirs(STATS_DIR, exist_ok=True)
+
+    print("FID stats: computing reference statistics from validation set...")
+    t0 = time.time()
+
+    extractor = InceptionFeatureExtractor()
+    val_loader = make_dataloader("val", batch_size=64, num_workers=4,
+                                 infinite=False, data_dir=data_dir)
+
+    all_features = []
+    n_processed = 0
+    for images, labels in val_loader:
+        # images are in [-1, 1], convert to [0, 1]
+        images_01 = (images + 1) / 2
+        features = extractor.extract_features(images_01)
+        all_features.append(features)
+        n_processed += len(images)
+        if n_processed >= FID_NUM_SAMPLES:
+            break
+        print(f"\r  Processed {n_processed}/{FID_NUM_SAMPLES} images", end="", flush=True)
+
+    print()
+    all_features = np.concatenate(all_features, axis=0)[:FID_NUM_SAMPLES]
+    mu = np.mean(all_features, axis=0)
+    sigma = np.cov(all_features, rowvar=False)
+
+    np.save(mu_path, mu)
+    np.save(sigma_path, sigma)
+
+    t1 = time.time()
+    print(f"FID stats: computed in {t1 - t0:.1f}s, saved to {STATS_DIR}")
 
     # Sanity check
-    test = "Hello world! Numbers: 123. Unicode: 你好"
-    encoded = enc.encode_ordinary(test)
-    decoded = enc.decode(encoded)
-    assert decoded == test, f"Tokenizer roundtrip failed: {test!r} -> {decoded!r}"
-    print(f"Tokenizer: sanity check passed (vocab_size={enc.n_vocab})")
+    print(f"FID stats: mu shape={mu.shape}, sigma shape={sigma.shape}")
+    print(f"FID stats: mu range=[{mu.min():.2f}, {mu.max():.2f}]")
 
 # ---------------------------------------------------------------------------
 # Runtime utilities (imported by train.py)
 # ---------------------------------------------------------------------------
 
-class Tokenizer:
-    """Minimal tokenizer wrapper. Training is handled above."""
+class FlowMatching:
+    """Flow Matching with optimal transport conditional paths."""
 
-    def __init__(self, enc):
-        self.enc = enc
-        self.bos_token_id = enc.encode_single_token(BOS_TOKEN)
+    def __init__(self, sigma_min=1e-4):
+        self.sigma_min = sigma_min
 
-    @classmethod
-    def from_directory(cls, tokenizer_dir=TOKENIZER_DIR):
-        with open(os.path.join(tokenizer_dir, "tokenizer.pkl"), "rb") as f:
-            enc = pickle.load(f)
-        return cls(enc)
+    def forward_sample(self, x0, t):
+        """
+        Interpolate from noise (t=0) to data (t=1).
+        x0 is DATA, noise is sampled.
+        Returns noisy sample x_t and velocity target.
+        """
+        data = x0
+        noise = torch.randn_like(data)
 
-    def get_vocab_size(self):
-        return self.enc.n_vocab
+        t_expanded = t.float().view(-1, 1, 1, 1).to(data.device)
 
-    def get_bos_token_id(self):
-        return self.bos_token_id
+        # OT conditional path: x_t = t * data + (1 - (1 - sigma_min) * t) * noise
+        x_t = t_expanded * data + (1 - (1 - self.sigma_min) * t_expanded) * noise
 
-    def encode(self, text, prepend=None, num_threads=8):
-        if prepend is not None:
-            prepend_id = prepend if isinstance(prepend, int) else self.enc.encode_single_token(prepend)
-        if isinstance(text, str):
-            ids = self.enc.encode_ordinary(text)
-            if prepend is not None:
-                ids.insert(0, prepend_id)
-        elif isinstance(text, list):
-            ids = self.enc.encode_ordinary_batch(text, num_threads=num_threads)
-            if prepend is not None:
-                for row in ids:
-                    row.insert(0, prepend_id)
+        # Velocity target: v = data - (1 - sigma_min) * noise
+        velocity = data - (1 - self.sigma_min) * noise
+
+        return x_t, velocity
+
+    def train_loss(self, model, x0, class_labels=None):
+        """Compute flow matching MSE loss (teacher-forced, for backprop)."""
+        batch_size = x0.shape[0]
+        t = torch.rand(batch_size, device=x0.device)
+        x_t, velocity = self.forward_sample(x0, t)
+        predicted_velocity = model(x_t, t, class_labels=class_labels)
+        return F.mse_loss(predicted_velocity, velocity)
+
+    @torch.no_grad()
+    def sample(self, model, shape, device, num_steps=50, class_labels=None):
+        """Euler ODE solver from noise (t=0) to data (t=1)."""
+        x = torch.randn(shape, device=device)
+        dt = 1.0 / num_steps
+
+        for i in range(num_steps):
+            t = i / num_steps
+            t_tensor = torch.full((shape[0],), t, device=device)
+            velocity = model(x, t_tensor, class_labels=class_labels)
+            x = x + velocity * dt
+
+        return x
+
+    def denoising_loss(self, model, x0, class_labels=None, denoising_steps=20, noise_seed=None):
+        """
+        Full ODE denoising loss for zero-order (SPSA) training.
+        No teacher forcing: starts from pure Gaussian noise, runs the model
+        denoising_steps times via Euler integration, and returns MSE between
+        the denoised output and the clean data x0.
+
+        Uses deterministic noise when noise_seed is provided, ensuring
+        consistent loss evaluation for SPSA ±epsilon perturbation pairs.
+
+        Returns: float (scalar loss value)
+        """
+        device = x0.device
+        if noise_seed is not None:
+            gen = torch.Generator(device=device)
+            gen.manual_seed(noise_seed)
+            noise = torch.randn(x0.shape, device=device, dtype=x0.dtype, generator=gen)
         else:
-            raise ValueError(f"Invalid input type: {type(text)}")
-        return ids
+            noise = torch.randn_like(x0)
 
-    def decode(self, ids):
-        return self.enc.decode(ids)
+        x = noise
+        dt = 1.0 / denoising_steps
+
+        for i in range(denoising_steps):
+            t = i / denoising_steps
+            t_tensor = torch.full((x0.shape[0],), t, device=device)
+            velocity = model(x, t_tensor, class_labels=class_labels)
+            x = x + velocity * dt
+
+        return F.mse_loss(x, x0).item()
 
 
-def get_token_bytes(device="cpu"):
-    path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
-    with open(path, "rb") as f:
-        return torch.load(f, map_location=device)
+class ImageNetDataset(Dataset):
+    """Wraps HuggingFace ImageNet dataset with image transforms."""
+
+    def __init__(self, split, transform, data_dir=None):
+        from datasets import load_dataset
+        hf_split = "train" if split == "train" else "validation"
+        cache_dir = data_dir if data_dir else DATA_DIR
+        self.ds = load_dataset("ILSVRC/imagenet-1k", split=hf_split, cache_dir=cache_dir)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        item = self.ds[idx]
+        image = item["image"].convert("RGB")
+        label = item["label"]
+        image = self.transform(image)
+        return image, label
 
 
-def _document_batches(split, tokenizer_batch_size=128):
-    """Infinite iterator over document batches from parquet files."""
-    parquet_paths = list_parquet_files()
-    assert len(parquet_paths) > 0, "No parquet files found. Run prepare.py first."
-    val_path = os.path.join(DATA_DIR, VAL_FILENAME)
+def get_transform(split):
+    """Get image transforms for train/val split. Output in [-1, 1]."""
     if split == "train":
-        parquet_paths = [p for p in parquet_paths if p != val_path]
+        return transforms.Compose([
+            transforms.Resize(IMG_SIZE, antialias=True),
+            transforms.RandomCrop(IMG_SIZE),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
     else:
-        parquet_paths = [val_path]
-    epoch = 1
-    while True:
-        for filepath in parquet_paths:
-            pf = pq.ParquetFile(filepath)
-            for rg_idx in range(pf.num_row_groups):
-                rg = pf.read_row_group(rg_idx)
-                batch = rg.column('text').to_pylist()
-                for i in range(0, len(batch), tokenizer_batch_size):
-                    yield batch[i:i+tokenizer_batch_size], epoch
-        epoch += 1
+        return transforms.Compose([
+            transforms.Resize(IMG_SIZE, antialias=True),
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
 
 
-def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
+def make_dataloader(split, batch_size, num_workers=4, infinite=True, data_dir=None):
     """
-    BOS-aligned dataloader with best-fit packing.
-    Every row starts with BOS. Documents packed using best-fit to minimize cropping.
-    When no document fits remaining space, crops shortest doc to fill exactly.
-    100% utilization (no padding).
+    ImageNet dataloader.
+    If infinite=True, yields (images, labels, epoch) forever on GPU.
+    If infinite=False, yields (images, labels) for one epoch on CPU.
     """
     assert split in ["train", "val"]
-    row_capacity = T + 1
-    batches = _document_batches(split)
-    bos_token = tokenizer.get_bos_token_id()
-    doc_buffer = []
-    epoch = 1
+    transform = get_transform(split)
+    dataset = ImageNetDataset(split, transform, data_dir=data_dir)
 
-    def refill_buffer():
-        nonlocal epoch
-        doc_batch, epoch = next(batches)
-        token_lists = tokenizer.encode(doc_batch, prepend=bos_token)
-        doc_buffer.extend(token_lists)
+    if not infinite:
+        return DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                          num_workers=num_workers, pin_memory=True, drop_last=True)
 
-    # Pre-allocate buffers: [inputs (B*T) | targets (B*T)]
-    row_buffer = torch.empty((B, row_capacity), dtype=torch.long)
-    cpu_buffer = torch.empty(2 * B * T, dtype=torch.long, pin_memory=True)
-    gpu_buffer = torch.empty(2 * B * T, dtype=torch.long, device="cuda")
-    cpu_inputs = cpu_buffer[:B * T].view(B, T)
-    cpu_targets = cpu_buffer[B * T:].view(B, T)
-    inputs = gpu_buffer[:B * T].view(B, T)
-    targets = gpu_buffer[B * T:].view(B, T)
+    # Infinite iterator with epoch tracking and GPU transfer
+    def infinite_loader():
+        epoch = 1
+        while True:
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=(split == "train"),
+                                num_workers=num_workers, pin_memory=True, drop_last=True,
+                                persistent_workers=(num_workers > 0))
+            for images, labels in loader:
+                yield images.cuda(non_blocking=True), labels.cuda(non_blocking=True), epoch
+            epoch += 1
 
-    while True:
-        for row_idx in range(B):
-            pos = 0
-            while pos < row_capacity:
-                while len(doc_buffer) < buffer_size:
-                    refill_buffer()
-
-                remaining = row_capacity - pos
-
-                # Find largest doc that fits entirely
-                best_idx = -1
-                best_len = 0
-                for i, doc in enumerate(doc_buffer):
-                    doc_len = len(doc)
-                    if doc_len <= remaining and doc_len > best_len:
-                        best_idx = i
-                        best_len = doc_len
-
-                if best_idx >= 0:
-                    doc = doc_buffer.pop(best_idx)
-                    row_buffer[row_idx, pos:pos + len(doc)] = torch.tensor(doc, dtype=torch.long)
-                    pos += len(doc)
-                else:
-                    # No doc fits — crop shortest to fill remaining
-                    shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
-                    doc = doc_buffer.pop(shortest_idx)
-                    row_buffer[row_idx, pos:pos + remaining] = torch.tensor(doc[:remaining], dtype=torch.long)
-                    pos += remaining
-
-        cpu_inputs.copy_(row_buffer[:, :-1])
-        cpu_targets.copy_(row_buffer[:, 1:])
-        gpu_buffer.copy_(cpu_buffer, non_blocking=True)
-        yield inputs, targets, epoch
+    return infinite_loader()
 
 # ---------------------------------------------------------------------------
 # Evaluation (DO NOT CHANGE — this is the fixed metric)
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def evaluate_bpb(model, tokenizer, batch_size):
+def evaluate_fid(model, flow_matching, batch_size, num_classes=NUM_CLASSES,
+                 num_samples=FID_NUM_SAMPLES, num_steps=50):
     """
-    Bits per byte (BPB): vocab size-independent evaluation metric.
-    Sums per-token cross-entropy (in nats), sums target byte lengths,
-    then converts nats/byte to bits/byte. Special tokens (byte length 0)
-    are excluded from both sums.
-    Uses fixed MAX_SEQ_LEN so results are comparable across configs.
+    Frechet Inception Distance (FID): standard evaluation metric for generative models.
+    Generates samples using the trained model and Euler ODE solver,
+    extracts InceptionV3 pool features, and compares against precomputed
+    reference statistics from real validation images.
+    Lower FID = better quality and diversity.
     """
-    token_bytes = get_token_bytes(device="cuda")
-    val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
-    steps = EVAL_TOKENS // (batch_size * MAX_SEQ_LEN)
-    total_nats = 0.0
-    total_bytes = 0
-    for _ in range(steps):
-        x, y, _ = next(val_loader)
-        loss_flat = model(x, y, reduction='none').view(-1)
-        y_flat = y.view(-1)
-        nbytes = token_bytes[y_flat]
-        mask = nbytes > 0
-        total_nats += (loss_flat * mask).sum().item()
-        total_bytes += nbytes.sum().item()
-    return total_nats / (math.log(2) * total_bytes)
+    mu_path = os.path.join(STATS_DIR, "fid_mu.npy")
+    sigma_path = os.path.join(STATS_DIR, "fid_sigma.npy")
+    ref_mu = np.load(mu_path)
+    ref_sigma = np.load(sigma_path)
+
+    device = next(model.parameters()).device
+    extractor = InceptionFeatureExtractor(device=str(device))
+
+    all_features = []
+    n_generated = 0
+    while n_generated < num_samples:
+        current_batch = min(batch_size, num_samples - n_generated)
+        # Generate class-conditional samples
+        labels = torch.randint(0, num_classes, (current_batch,), device=device)
+        shape = (current_batch, IMG_CHANNELS, IMG_SIZE, IMG_SIZE)
+        samples = flow_matching.sample(model, shape, device, num_steps=num_steps,
+                                       class_labels=labels)
+        # Clamp to [-1, 1] and convert to [0, 1] for Inception
+        samples = torch.clamp(samples, -1, 1)
+        samples_01 = (samples + 1) / 2
+        features = extractor.extract_features(samples_01)
+        all_features.append(features)
+        n_generated += current_batch
+        print(f"\r  FID eval: generated {n_generated}/{num_samples} samples", end="", flush=True)
+
+    print()
+    all_features = np.concatenate(all_features, axis=0)[:num_samples]
+    gen_mu = np.mean(all_features, axis=0)
+    gen_sigma = np.cov(all_features, rowvar=False)
+    fid = compute_fid_from_stats(ref_mu, ref_sigma, gen_mu, gen_sigma)
+    return fid
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare data and tokenizer for autoresearch")
-    parser.add_argument("--num-shards", type=int, default=10, help="Number of training shards to download (-1 = all). Val shard is always pinned.")
-    parser.add_argument("--download-workers", type=int, default=8, help="Number of parallel download workers")
+    parser = argparse.ArgumentParser(description="Prepare ImageNet data and FID stats for diffusion training")
+    parser.add_argument("--data-dir", type=str, default=None, help="Path to HF datasets cache (overrides default)")
     args = parser.parse_args()
-
-    num_shards = MAX_SHARD if args.num_shards == -1 else args.num_shards
 
     print(f"Cache directory: {CACHE_DIR}")
     print()
 
     # Step 1: Download data
-    download_data(num_shards, download_workers=args.download_workers)
+    download_data(data_dir=args.data_dir)
     print()
 
-    # Step 2: Train tokenizer
-    train_tokenizer()
+    # Step 2: Compute FID reference statistics
+    compute_reference_stats(data_dir=args.data_dir)
     print()
     print("Done! Ready to train.")

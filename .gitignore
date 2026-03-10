@@ -21,3 +21,13 @@ dev/
 
 # Results file
 results.tsv
+
+# Dotfiles and dot-directories (secrets, env, etc)
+.env
+.secrets
+.bashrc
+.bash_history
+.ipynb_checkpoints/
+
+# Garbage
+garbage/
