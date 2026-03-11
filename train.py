@@ -113,6 +113,9 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
     help="Batch accumulation steps for SPSA gradient estimation stability")
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
+spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
+    choices=["teacher", "denoising"],
+    help="SPSA loss: 'teacher' (1 fwd pass, fast) or 'denoising' (T fwd passes, slow)")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 
@@ -949,14 +952,17 @@ if args.solver == "spsa":
     noise_seed = [0]
 
     def spsa_loss_fn(batch_idx=0):
-        """SPSA training loss: full ODE denoising, no teacher forcing."""
+        """SPSA training loss: teacher-forced (fast) or full ODE denoising."""
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
         with torch.no_grad(), autocast_ctx:
-            return flow_matching.denoising_loss(
-                model, x_b, class_labels=y_b,
-                denoising_steps=args.denoising_steps,
-                noise_seed=noise_seed[0] + batch_idx,
-            )
+            if args.spsa_loss_type == "teacher":
+                return flow_matching.train_loss(model, x_b, class_labels=y_b).item()
+            else:
+                return flow_matching.denoising_loss(
+                    model, x_b, class_labels=y_b,
+                    denoising_steps=args.denoising_steps,
+                    noise_seed=noise_seed[0] + batch_idx,
+                )
 
     # Probe setup for LR search
     probe_data = [None, None]
@@ -972,11 +978,14 @@ if args.solver == "spsa":
     def probe_loss_fn():
         """Fixed-batch loss for LR probing."""
         with torch.no_grad(), autocast_ctx:
-            return flow_matching.denoising_loss(
-                model, probe_data[0], class_labels=probe_data[1],
-                denoising_steps=args.denoising_steps,
-                noise_seed=42,  # fixed noise for consistent probing
-            )
+            if args.spsa_loss_type == "teacher":
+                return flow_matching.train_loss(model, probe_data[0], class_labels=probe_data[1]).item()
+            else:
+                return flow_matching.denoising_loss(
+                    model, probe_data[0], class_labels=probe_data[1],
+                    denoising_steps=args.denoising_steps,
+                    noise_seed=42,
+                )
 
     # Initial LR search if strategy != none and != local
     if args.search_strategy == "line":
