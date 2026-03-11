@@ -70,6 +70,9 @@ train_group.add_argument("--warmdown-ratio", type=float, default=0.3,
     help="Fraction of time budget for LR warmdown")
 train_group.add_argument("--final-lr-frac", type=float, default=0.0,
     help="Final LR as fraction of initial LR")
+train_group.add_argument("--lr-schedule", type=str, default="linear",
+    choices=["linear", "cosine"],
+    help="LR decay schedule type (linear warmdown or cosine)")
 train_group.add_argument("--sigma-min", type=float, default=1e-4,
     help="Flow matching minimum variance for numerical stability")
 train_group.add_argument("--time-budget", type=int, default=TIME_BUDGET,
@@ -918,13 +921,22 @@ else:
 # Schedules (all based on progress = training_time / time_budget)
 
 def get_lr_multiplier(progress):
-    if progress < args.warmup_ratio:
-        return progress / args.warmup_ratio if args.warmup_ratio > 0 else 1.0
-    elif progress < 1.0 - args.warmdown_ratio:
-        return 1.0
+    if args.lr_schedule == "cosine":
+        # Cosine schedule: warmup then cosine decay to final_lr_frac
+        if progress < args.warmup_ratio:
+            return progress / args.warmup_ratio if args.warmup_ratio > 0 else 1.0
+        else:
+            decay_progress = (progress - args.warmup_ratio) / (1.0 - args.warmup_ratio)
+            return args.final_lr_frac + 0.5 * (1.0 - args.final_lr_frac) * (1.0 + math.cos(math.pi * decay_progress))
     else:
-        cooldown = (1.0 - progress) / args.warmdown_ratio
-        return cooldown * 1.0 + (1 - cooldown) * args.final_lr_frac
+        # Linear warmup + constant + linear warmdown
+        if progress < args.warmup_ratio:
+            return progress / args.warmup_ratio if args.warmup_ratio > 0 else 1.0
+        elif progress < 1.0 - args.warmdown_ratio:
+            return 1.0
+        else:
+            cooldown = (1.0 - progress) / args.warmdown_ratio
+            return cooldown * 1.0 + (1 - cooldown) * args.final_lr_frac
 
 # ---------------------------------------------------------------------------
 # SPSA loss functions and probe setup
