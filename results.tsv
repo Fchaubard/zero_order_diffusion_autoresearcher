@@ -75,3 +75,7 @@ f3bb5e2	51.0608	6.8	discard	depth=8 lr=7e-4 beta2=0.90
 6b30aa9	52.0244	22.4	discard	depth=8 lr=1e-3 beta2=0.95 cosine+gc1.0 (R10)
 6b30aa9	52.0505	22.4	discard	depth=8 lr=1e-3 beta2=0.95 cosine (R10)
 6b30aa9	52.9452	22.4	discard	depth=8 lr=8e-4 beta2=0.95 cosine (R10)
+6b30aa9	49.3322	11.8	keep	depth=8 lr=8e-4 beta2=0.95 bs=128 (R11, 24k steps!)
+6b30aa9	50.6680	22.4	discard	depth=8 lr=8e-4 beta2=0.95 warmdown=0.2 (R11)
+6b30aa9	51.0340	22.4	discard	depth=8 lr=8e-4 beta2=0.95 warmdown=0.1 (R11)
+6b30aa9	51.8928	22.4	discard	depth=8 lr=8e-4 beta2=0.95 wd=0.2+wu=0.05 (R11)
