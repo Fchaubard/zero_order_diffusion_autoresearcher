@@ -55,3 +55,11 @@ f3bb5e2	49.7695	6.8	keep	depth=8 lr=7e-4 beta2=0.95 warmdown=0.15
 f3bb5e2	50.4912	8.4	discard	depth=10 lr=7e-4 beta2=0.95
 f3bb5e2	50.5126	6.8	discard	depth=8 lr=7e-4 beta2=0.95 wd=0.01
 f3bb5e2	51.0608	6.8	discard	depth=8 lr=7e-4 beta2=0.90
+964387a	49.3580	22.4	keep	depth=8 lr=8e-4 beta2=0.95 wd=0.05 (R8, I/O contention)
+964387a	50.1104	22.4	discard	depth=8 lr=1e-3 beta2=0.95 (R8)
+964387a	50.1785	22.4	discard	depth=8 lr=9e-4 beta2=0.95 (R8)
+964387a	50.7567	22.4	discard	depth=8 lr=8e-4 beta2=0.95 beta1=0.85 (R8)
+964387a	50.8606	22.4	discard	depth=8 lr=8e-4 beta2=0.95 warmup=0.05 (R8)
+964387a	50.9554	22.4	discard	depth=8 lr=8e-4 beta2=0.95 wu+wd (R8)
+964387a	51.4935	22.4	discard	depth=8 lr=8e-4 beta2=0.90 (R8)
+964387a	51.5686	22.4	discard	depth=8 lr=8e-4 beta2=0.95 warmdown=0.15 (R8)
