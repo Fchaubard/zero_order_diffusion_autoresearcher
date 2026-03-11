@@ -1137,7 +1137,18 @@ total_images = step * args.total_batch_size
 # Final eval
 model.eval()
 model_for_eval = model._orig_mod.float() if hasattr(model, '_orig_mod') else model.float()
-val_fid = evaluate_fid(model_for_eval, flow_matching, args.device_batch_size)
+
+class Float32Wrapper(nn.Module):
+    """Wrapper that ensures model output is always float32 for FID evaluation."""
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs).float()
+    def parameters(self):
+        return self.model.parameters()
+
+val_fid = evaluate_fid(Float32Wrapper(model_for_eval), flow_matching, args.device_batch_size)
 
 # Final summary
 t_end = time.time()
