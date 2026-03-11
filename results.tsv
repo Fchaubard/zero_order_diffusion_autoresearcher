@@ -1,0 +1,57 @@
+commit	val_fid	memory_gb	status	description
+f3bb5e2	152.4092	1.2	keep	baseline backprop depth=1 lr=1e-4
+f3bb5e2	127.4646	1.5	keep	backprop depth=2
+f3bb5e2	97.7291	2.8	keep	backprop depth=4 (best round 1)
+f3bb5e2	128.6582	1.2	keep	backprop lr=3e-4
+f3bb5e2	139.5766	1.3	keep	backprop n_embd=1024
+f3bb5e2	184.3847	1.2	discard	backprop batch_size=512
+f3bb5e2	0.000000	0.0	crash	SPSA curvature (BFloat16 FID crash)
+f3bb5e2	317.1046	1.1	discard	SPSA baseline (zero-order much worse than backprop)
+f3bb5e2	0.000000	0.0	crash	depth=4 lr=1e-3 (loss diverged to 10.08)
+f3bb5e2	66.9908	3.5	keep	depth=4 lr=5e-4 (best round 2!)
+f3bb5e2	73.2451	3.5	keep	depth=4 lr=3e-4
+f3bb5e2	85.5588	4.9	keep	depth=4 n_embd=1024
+f3bb5e2	92.5277	6.6	keep	depth=8
+f3bb5e2	92.3444	5.1	keep	depth=6
+f3bb5e2	97.9514	3.5	discard	depth=4 weight_decay=0.01 (no improvement)
+f3bb5e2	142.0503	3.0	discard	depth=8 n_embd=384 (too narrow)
+f3bb5e2	302.4093	3.5	discard	depth=4 lr=7e-4 (loss diverged)
+f3bb5e2	58.1145	5.1	keep	depth=6 lr=5e-4 (BEST! round 3)
+f3bb5e2	60.7805	6.6	keep	depth=8 lr=3e-4
+f3bb5e2	65.1543	5.1	keep	depth=6 lr=3e-4
+f3bb5e2	69.1760	3.5	discard	depth=4 lr=4e-4
+f3bb5e2	74.7440	3.5	discard	depth=4 lr=6e-4
+f3bb5e2	304.8002	4.9	discard	depth=4 lr=5e-4 n_embd=1024 (diverged)
+f3bb5e2	88.5673	11.6	discard	depth=4 lr=5e-4 patch_size=2 (worse FID + high VRAM)
+f3bb5e2	61.9527	5.1	discard	depth=6 lr=4e-4 (lr=5e-4 was better)
+f3bb5e2	56.0217	6.6	keep	depth=8 lr=5e-4 (BEST! round 4)
+f3bb5e2	57.0587	6.6	keep	depth=8 lr=4e-4
+f3bb5e2	60.7283	5.1	discard	depth=6 lr=5e-4 weight_decay=0.01
+f3bb5e2	62.2871	8.3	discard	depth=10 lr=3e-4
+f3bb5e2	70.0590	5.1	discard	depth=6 lr=5e-4 bs=512
+f3bb5e2	71.6007	5.1	discard	depth=6 lr=6e-4
+f3bb5e2	73.6043	9.8	discard	depth=12 lr=2e-4
+f3bb5e2	63.8813	7.2	discard	depth=6 n_embd=1024 lr=3e-4
+f3bb5e2	51.9657	6.6	keep	depth=8 lr=5e-4 beta2=0.95 (BEST! round 5)
+f3bb5e2	54.8613	6.6	keep	depth=8 lr=5e-4 warmup=0.05 warmdown=0.1
+f3bb5e2	55.0034	6.6	keep	depth=8 lr=5e-4 warmdown=0.15
+f3bb5e2	56.2056	6.6	discard	depth=8 lr=5e-4 head_dim=32
+f3bb5e2	56.7443	6.6	discard	depth=8 lr=5e-4 dbs=32
+f3bb5e2	61.0249	8.3	discard	depth=10 lr=5e-4
+f3bb5e2	64.1657	6.6	discard	depth=8 lr=6e-4
+f3bb5e2	63.9846	4.1	discard	depth=8 lr=5e-4 n_embd=512 (narrower=worse)
+9468c42	49.9212	6.6	keep	depth=8 lr=7e-4 beta2=0.95 (BEST! round 6)
+9468c42	51.8151	6.6	keep	depth=8 lr=5e-4 beta2=0.95 weight_decay=0.01
+9468c42	52.0494	6.6	discard	depth=8 lr=5e-4 beta2=0.95 beta1=0.85
+9468c42	52.1839	6.6	discard	depth=8 lr=5e-4 beta2=0.95 warmdown=0.15
+9468c42	52.5227	6.6	discard	depth=8 lr=5e-4 beta2=0.95 warmup=0.05 warmdown=0.1
+9468c42	52.7001	8.3	discard	depth=10 lr=5e-4 beta2=0.95
+9468c42	53.3260	6.6	discard	depth=8 lr=5e-4 beta2=0.85
+f3bb5e2	54.7291	7.5	discard	SwiGLU depth=8 lr=5e-4 beta2=0.95 (worse than GELU)
+f3bb5e2	49.0283	6.8	keep	depth=8 lr=8e-4 beta2=0.95 (BEST! round 7)
+f3bb5e2	49.7274	6.8	keep	depth=8 lr=7e-4 beta2=0.95 beta1=0.85
+f3bb5e2	49.7657	6.8	keep	depth=8 lr=7e-4 beta2=0.95 warmup=0.05
+f3bb5e2	49.7695	6.8	keep	depth=8 lr=7e-4 beta2=0.95 warmdown=0.15
+f3bb5e2	50.4912	8.4	discard	depth=10 lr=7e-4 beta2=0.95
+f3bb5e2	50.5126	6.8	discard	depth=8 lr=7e-4 beta2=0.95 wd=0.01
+f3bb5e2	51.0608	6.8	discard	depth=8 lr=7e-4 beta2=0.90
