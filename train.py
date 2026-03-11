@@ -87,6 +87,10 @@ bp_group.add_argument("--adam-beta1", type=float, default=0.9,
     help="Adam beta1")
 bp_group.add_argument("--adam-beta2", type=float, default=0.999,
     help="Adam beta2")
+bp_group.add_argument("--grad-clip", type=float, default=0.0,
+    help="Max gradient norm for clipping (0 = disabled)")
+bp_group.add_argument("--ema-decay", type=float, default=0.0,
+    help="EMA decay rate for model weights (0 = disabled, try 0.9999)")
 
 # SPSA-specific
 spsa_group = parser.add_argument_group("SPSA-specific")
@@ -878,6 +882,14 @@ if args.solver == "backprop":
         adam_betas=(args.adam_beta1, args.adam_beta2),
     )
     model = torch.compile(model, dynamic=False)
+    # EMA setup
+    ema_model = None
+    if args.ema_decay > 0:
+        import copy
+        ema_model = copy.deepcopy(model._orig_mod if hasattr(model, '_orig_mod') else model)
+        ema_model.eval()
+        for p in ema_model.parameters():
+            p.requires_grad = False
 else:
     # SPSA: no backprop, no torch.compile (in-place weight perturbation)
     model.eval()
@@ -1006,7 +1018,15 @@ while True:
         lrm = get_lr_multiplier(progress)
         for group in optimizer.param_groups:
             group["lr"] = group["initial_lr"] * lrm
+        if args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
+        # EMA update
+        if ema_model is not None:
+            src_model = model._orig_mod if hasattr(model, '_orig_mod') else model
+            with torch.no_grad():
+                for ema_p, src_p in zip(ema_model.parameters(), src_model.parameters()):
+                    ema_p.lerp_(src_p.data, 1.0 - args.ema_decay)
         model.zero_grad(set_to_none=True)
         train_loss_f = train_loss.item()
 
@@ -1136,7 +1156,11 @@ total_images = step * args.total_batch_size
 
 # Final eval
 model.eval()
-model_for_eval = model._orig_mod.float() if hasattr(model, '_orig_mod') else model.float()
+if args.solver == "backprop" and ema_model is not None:
+    model_for_eval = ema_model.float()
+    print("Using EMA model for evaluation")
+else:
+    model_for_eval = model._orig_mod.float() if hasattr(model, '_orig_mod') else model.float()
 
 class Float32Wrapper(nn.Module):
     """Wrapper that ensures model output is always float32 for FID evaluation."""
