@@ -1028,9 +1028,6 @@ if args.solver == "spsa":
                     total_loss += F.mse_loss(x, x_target).item()
                 return total_loss / args.denoising_steps
             elif args.spsa_loss_type == "inception":
-                # Inception feature matching: generate samples via ODE,
-                # extract inception features, compute squared distance to
-                # reference feature mean. Directly optimizes FID.
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
@@ -1042,15 +1039,14 @@ if args.solver == "spsa":
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
-                # Extract features and compare to reference
-                samples = torch.clamp(x.float(), -1, 1)
-                samples_01 = (samples + 1) / 2
-                gen_features = spsa_inception[0].extract_features(samples_01)
+                # Must exit autocast for inception (needs float32)
+                with torch.amp.autocast(device_type="cuda", enabled=False):
+                    samples = torch.clamp(x.float(), -1, 1)
+                    samples_01 = (samples + 1) / 2
+                    gen_features = spsa_inception[0].extract_features(samples_01)
                 gen_mu = np.mean(gen_features, axis=0)
                 return float(np.sum((gen_mu - spsa_ref_mu[0]) ** 2))
             elif args.spsa_loss_type == "minifid":
-                # Mini-batch FID: generate samples, compute FID approximation
-                # Uses both mean and covariance of inception features
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
@@ -1062,11 +1058,11 @@ if args.solver == "spsa":
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt_ode
-                samples = torch.clamp(x.float(), -1, 1)
-                samples_01 = (samples + 1) / 2
-                gen_features = spsa_inception[0].extract_features(samples_01)
+                with torch.amp.autocast(device_type="cuda", enabled=False):
+                    samples = torch.clamp(x.float(), -1, 1)
+                    samples_01 = (samples + 1) / 2
+                    gen_features = spsa_inception[0].extract_features(samples_01)
                 gen_mu = np.mean(gen_features, axis=0)
-                # Simplified FID: just use mean distance (covariance is too noisy with small batch)
                 diff = gen_mu - spsa_ref_mu[0]
                 return float(np.sum(diff * diff))
             elif args.spsa_loss_type == "traj_div":
