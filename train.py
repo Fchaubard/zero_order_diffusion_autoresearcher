@@ -129,6 +129,9 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
              "ssim", "fft", "multiscale", "ssim_mse", "direct_fid"],
     help="SPSA loss type for zero-order training")
+spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
+    help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
+         "E.g. 0.3 = use MSE for first 30%%, then switch to target loss (enables warm start for perceptual losses)")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 spsa_group.add_argument("--no-zero-init", action="store_true",
@@ -1152,12 +1155,26 @@ if args.solver == "spsa":
         spsa_ref_sigma[0] = np.load(_os.path.join(STATS_DIR, "fid_sigma.npy"))
         print(f"Inception feature matching: loaded reference stats (dim={spsa_ref_mu[0].shape[0]})")
 
+    # Track which loss type is active (for logging during warmup phase)
+    active_loss_type = [args.spsa_loss_type]
+
     def spsa_loss_fn(batch_idx=0):
         """SPSA training loss with multiple loss type options."""
         T = current_T[0]  # Dynamic T, set per training step
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
+
+        # Loss warmup: use denoising MSE for first loss_warmup_frac of training
+        # This provides strong gradient signal when model output is noise,
+        # then switches to the target (possibly non-differentiable) loss
+        loss_type = args.spsa_loss_type
+        if args.loss_warmup_frac > 0:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            if progress_now < args.loss_warmup_frac:
+                loss_type = "denoising"  # warm start with MSE
+            active_loss_type[0] = loss_type
+
         with torch.no_grad(), autocast_ctx:
-            if args.spsa_loss_type == "teacher":
+            if loss_type == "teacher":
                 # Use pre-generated t and noise for determinism across ±eps
                 t = spsa_teacher_t[0]
                 noise = spsa_teacher_noise[0]
@@ -1167,13 +1184,13 @@ if args.solver == "spsa":
                 velocity_target = x_b - (1 - sigma_min) * noise
                 predicted = model(x_t, t, class_labels=y_b)
                 return F.mse_loss(predicted, velocity_target).item()
-            elif args.spsa_loss_type == "denoising":
+            elif loss_type == "denoising":
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
                     denoising_steps=T,
                     noise_seed=noise_seed[0] + batch_idx,
                 )
-            elif args.spsa_loss_type == "trajectory":
+            elif loss_type == "trajectory":
                 # Per-step velocity matching: compare predicted velocity to
                 # flow matching target at each ODE step. Gives T signals.
                 dev = x_b.device
@@ -1192,7 +1209,7 @@ if args.solver == "spsa":
                     total_loss += F.mse_loss(velocity, v_target).item()
                     x = x + velocity * dt
                 return total_loss / T
-            elif args.spsa_loss_type == "progressive":
+            elif loss_type == "progressive":
                 # Per-step state matching: compare ODE state to ideal
                 # intermediate x_target(t) = t*x0 + (1-(1-σ)*t)*noise
                 dev = x_b.device
@@ -1213,7 +1230,7 @@ if args.solver == "spsa":
                     x_target = t_next * x_b + (1 - (1 - sigma_min) * t_next) * noise
                     total_loss += F.mse_loss(x, x_target).item()
                 return total_loss / T
-            elif args.spsa_loss_type == "inception":
+            elif loss_type == "inception":
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
@@ -1232,7 +1249,7 @@ if args.solver == "spsa":
                 gen_mu = np.mean(gen_features, axis=0)
                 # Normalize by feature dim to keep loss in reasonable range
                 return float(np.mean((gen_mu - spsa_ref_mu[0]) ** 2))
-            elif args.spsa_loss_type == "minifid":
+            elif loss_type == "minifid":
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
@@ -1251,7 +1268,7 @@ if args.solver == "spsa":
                 gen_mu = np.mean(gen_features, axis=0)
                 diff = gen_mu - spsa_ref_mu[0]
                 return float(np.mean(diff * diff))
-            elif args.spsa_loss_type == "traj_div":
+            elif loss_type == "traj_div":
                 # Trajectory loss with diversity penalty
                 # Penalizes generated images for being too similar (anti-collapse)
                 dev = x_b.device
@@ -1274,7 +1291,7 @@ if args.solver == "spsa":
                 batch_std = x.std(dim=0).mean().item()
                 # We want high diversity, so subtract it from loss
                 return traj_loss - 0.1 * batch_std
-            elif args.spsa_loss_type == "contrastive":
+            elif loss_type == "contrastive":
                 # Contrastive loss: each generated image should be closer to its
                 # own target than to other targets. Mean prediction fails this
                 # because the mean is equidistant from all targets.
@@ -1303,7 +1320,7 @@ if args.solver == "spsa":
                 # We want the diagonal to have high probability
                 contrastive_loss = -log_probs.diag().mean().item()
                 return contrastive_loss
-            elif args.spsa_loss_type == "cosine":
+            elif loss_type == "cosine":
                 # Cosine similarity loss: cares about direction, not magnitude
                 # Mean prediction has low cosine similarity to most targets
                 dev = x_b.device
@@ -1322,7 +1339,7 @@ if args.solver == "spsa":
                 target_flat = x_b.reshape(x_b.shape[0], -1).float()
                 cos_sim = F.cosine_similarity(x_flat, target_flat, dim=1)
                 return -cos_sim.mean().item()
-            elif args.spsa_loss_type == "huber":
+            elif loss_type == "huber":
                 # Huber loss: less sensitive to outliers than MSE
                 # May provide better gradients for SPSA
                 dev = x_b.device
@@ -1337,7 +1354,7 @@ if args.solver == "spsa":
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
                 return F.smooth_l1_loss(x, x_b).item()
-            elif args.spsa_loss_type == "combo":
+            elif loss_type == "combo":
                 # Combined: MSE for signal + contrastive to prevent mean collapse
                 # Key insight: use feature-normalized contrastive (cosine-based)
                 dev = x_b.device
@@ -1367,7 +1384,7 @@ if args.solver == "spsa":
                 contrastive = -log_probs.diag().mean().item()
                 # Combined: MSE drives toward targets, contrastive prevents collapse
                 return mse + 0.1 * contrastive
-            elif args.spsa_loss_type == "rank":
+            elif loss_type == "rank":
                 # Margin ranking loss: penalize when gen image is closer to
                 # wrong target than to correct target
                 dev = x_b.device
@@ -1399,7 +1416,7 @@ if args.solver == "spsa":
                 # Also add plain MSE to provide signal toward targets
                 mse = diag.mean().item()
                 return mse + rank_loss
-            elif args.spsa_loss_type == "mmd":
+            elif loss_type == "mmd":
                 # Maximum Mean Discrepancy on raw pixels
                 # Compares distribution of generated vs real images
                 # Mean prediction gives high MMD because point mass ≠ distribution
@@ -1442,7 +1459,7 @@ if args.solver == "spsa":
                        (K_yy * mask).sum() / (B * (B-1)) - \
                        2 * K_xy.mean()
                 return mmd2.item()
-            elif args.spsa_loss_type == "mmd_inception":
+            elif loss_type == "mmd_inception":
                 # MMD on InceptionV3 features (more semantically meaningful)
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
@@ -1482,7 +1499,7 @@ if args.solver == "spsa":
                        (K_yy * mask).sum() / (B * (B-1)) - \
                        2 * K_xy.mean()
                 return mmd2.item()
-            elif args.spsa_loss_type == "ssim":
+            elif loss_type == "ssim":
                 # SSIM loss: Structural Similarity Index
                 # NOT differentiable through ODE — only possible with zero-order!
                 # SSIM captures luminance, contrast, and structure — perceptually better than MSE
@@ -1516,7 +1533,7 @@ if args.solver == "spsa":
                            ((mu_x**2 + mu_y**2 + C1) * (sigma_x2 + sigma_y2 + C2))
                 # SSIM is in [-1, 1], higher is better. Return 1 - SSIM as loss.
                 return (1 - ssim_map.mean()).item()
-            elif args.spsa_loss_type == "ssim_mse":
+            elif loss_type == "ssim_mse":
                 # Combined SSIM + MSE: perceptual quality + pixel accuracy
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
@@ -1543,7 +1560,7 @@ if args.solver == "spsa":
                 ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
                 ssim_loss = (1 - ssim.mean()).item()
                 return mse + ssim_loss
-            elif args.spsa_loss_type == "fft":
+            elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
                 # Images have specific frequency characteristics that MSE ignores
@@ -1570,7 +1587,7 @@ if args.solver == "spsa":
                 log_mag_gen = torch.log1p(mag_gen)
                 log_mag_real = torch.log1p(mag_real)
                 return F.mse_loss(log_mag_gen, log_mag_real).item()
-            elif args.spsa_loss_type == "multiscale":
+            elif loss_type == "multiscale":
                 # Multi-scale loss: compare at original + downsampled resolutions
                 # Captures both fine detail and global structure
                 dev = x_b.device
@@ -1598,7 +1615,7 @@ if args.solver == "spsa":
                 y_quarter = F.avg_pool2d(y_f, 4)
                 total_loss += F.mse_loss(x_quarter, y_quarter).item()
                 return total_loss / 3.0
-            elif args.spsa_loss_type == "direct_fid":
+            elif loss_type == "direct_fid":
                 # DIRECT FID as training loss — THE unique zero-order advantage!
                 # Backprop CANNOT optimize this: it requires differentiating through
                 # InceptionV3 + matrix square root. SPSA doesn't care!
@@ -1885,7 +1902,10 @@ while True:
     remaining = max(0, args.time_budget - total_training_time)
 
     solver_tag = "BP" if args.solver == "backprop" else "SPSA"
-    print(f"\rstep {step:05d} ({pct_done:.1f}%) [{solver_tag}] | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | img/sec: {img_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+    loss_tag = ""
+    if args.solver == "spsa" and args.loss_warmup_frac > 0:
+        loss_tag = f" [{active_loss_type[0]}]"
+    print(f"\rstep {step:05d} ({pct_done:.1f}%) [{solver_tag}]{loss_tag} | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | img/sec: {img_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
 
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:
