@@ -128,6 +128,12 @@ spsa_group.add_argument("--fixed-batch-size", type=int, default=0,
 spsa_group.add_argument("--fixed-batch-mode", type=str, default="cycle",
     choices=["cycle", "all"],
     help="cycle: train on 1 image at a time; all: train on all fixed images every step")
+spsa_group.add_argument("--spsa-adam", action="store_true",
+    help="Use Adam optimizer for SPSA gradient updates (momentum + adaptive LR)")
+spsa_group.add_argument("--spsa-adam-beta1", type=float, default=0.9,
+    help="Adam beta1 for SPSA momentum")
+spsa_group.add_argument("--spsa-adam-beta2", type=float, default=0.999,
+    help="Adam beta2 for SPSA second moment")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -458,7 +464,8 @@ class SPSATrainer:
 
     def __init__(self, model, lr, epsilon, n_perts, use_curvature,
                  saturating_alpha, lambda_reg, memory_efficient,
-                 accum_steps, weight_decay, layerwise=False):
+                 accum_steps, weight_decay, layerwise=False,
+                 use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -469,6 +476,11 @@ class SPSATrainer:
         self.accum_steps = accum_steps
         self.weight_decay = weight_decay
         self.layerwise = layerwise
+        self.use_adam = use_adam
+        self.adam_beta1 = adam_beta1
+        self.adam_beta2 = adam_beta2
+        self.adam_eps = adam_eps
+        self.adam_step = 0
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -513,11 +525,22 @@ class SPSATrainer:
         else:
             self.grads = None
 
+        # Adam state for momentum-based SPSA
+        if use_adam and not memory_efficient:
+            self.m = [torch.zeros(info['numel'], device='cuda', dtype=torch.float32)
+                      for info in self.param_info]
+            self.v = [torch.zeros(info['numel'], device='cuda', dtype=torch.float32)
+                      for info in self.param_info]
+        else:
+            self.m = None
+            self.v = None
+
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
         curv_str = " [1.5-SPSA]" if use_curvature else ""
+        adam_str = " [ADAM]" if use_adam else ""
         print(f"SPSATrainer: {self.total/1e6:.2f}M params, packed={self.packed_size/1e6:.1f}MB"
-              f"{curv_str}{mode_str}{accum_str}")
+              f"{curv_str}{mode_str}{accum_str}{adam_str}")
 
     def step(self, loss_fn, iteration):
         """Perform one SPSA step. loss_fn(batch_idx) -> float."""
@@ -591,14 +614,26 @@ class SPSATrainer:
             total_loss += (loss_plus + loss_minus) / 2
             del packed
 
-        # Apply update: theta -= lr * grad
-        for info, grad in zip(self.param_info, self.grads):
-            info['param'].data.view(-1).sub_(grad, alpha=self.lr)
-
-        # Apply weight decay
-        if self.weight_decay > 0:
-            for info in self.param_info:
-                info['param'].data.mul_(1 - self.lr * self.weight_decay)
+        # Apply update
+        if self.use_adam and self.m is not None:
+            self.adam_step += 1
+            for i, (info, grad) in enumerate(zip(self.param_info, self.grads)):
+                g = grad.float()
+                self.m[i].mul_(self.adam_beta1).add_(g, alpha=1 - self.adam_beta1)
+                self.v[i].mul_(self.adam_beta2).addcmul_(g, g, value=1 - self.adam_beta2)
+                m_hat = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
+                v_hat = self.v[i] / (1 - self.adam_beta2 ** self.adam_step)
+                update = m_hat / (v_hat.sqrt() + self.adam_eps)
+                if self.weight_decay > 0:
+                    update.add_(info['param'].data.view(-1).float(), alpha=self.weight_decay)
+                info['param'].data.view(-1).sub_(update, alpha=self.lr)
+        else:
+            # Plain SGD
+            for info, grad in zip(self.param_info, self.grads):
+                info['param'].data.view(-1).sub_(grad, alpha=self.lr)
+            if self.weight_decay > 0:
+                for info in self.param_info:
+                    info['param'].data.mul_(1 - self.lr * self.weight_decay)
 
         return total_loss / self.n_perts
 
@@ -1037,6 +1072,8 @@ else:
         memory_efficient=args.memory_efficient,
         accum_steps=args.spsa_accum_steps, weight_decay=args.spsa_weight_decay,
         layerwise=args.layerwise_spsa,
+        use_adam=args.spsa_adam, adam_beta1=args.spsa_adam_beta1,
+        adam_beta2=args.spsa_adam_beta2,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
