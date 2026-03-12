@@ -1039,13 +1039,13 @@ if args.solver == "spsa":
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
-                # Must exit autocast for inception (needs float32)
                 with torch.amp.autocast(device_type="cuda", enabled=False):
                     samples = torch.clamp(x.float(), -1, 1)
                     samples_01 = (samples + 1) / 2
                     gen_features = spsa_inception[0].extract_features(samples_01)
                 gen_mu = np.mean(gen_features, axis=0)
-                return float(np.sum((gen_mu - spsa_ref_mu[0]) ** 2))
+                # Normalize by feature dim to keep loss in reasonable range
+                return float(np.mean((gen_mu - spsa_ref_mu[0]) ** 2))
             elif args.spsa_loss_type == "minifid":
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
@@ -1064,7 +1064,7 @@ if args.solver == "spsa":
                     gen_features = spsa_inception[0].extract_features(samples_01)
                 gen_mu = np.mean(gen_features, axis=0)
                 diff = gen_mu - spsa_ref_mu[0]
-                return float(np.sum(diff * diff))
+                return float(np.mean(diff * diff))
             elif args.spsa_loss_type == "traj_div":
                 # Trajectory loss with diversity penalty
                 # Penalizes generated images for being too similar (anti-collapse)
