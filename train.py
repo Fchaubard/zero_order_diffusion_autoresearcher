@@ -120,11 +120,9 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 spsa_group.add_argument("--no-zero-init", action="store_true",
-    help="Skip zero-init of output layers (useful for SPSA to start with non-zero outputs)")
+    help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
     help="Perturb one module at a time instead of all params (better gradient estimates)")
-spsa_group.add_argument("--no-zero-init", action="store_true",
-    help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
