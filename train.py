@@ -115,8 +115,8 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal"],
-    help="T schedule: fixed (constant T), linear (ramp T_min->T_max over training), lognormal (sample T ~ lognormal each step)")
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic"],
+    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
 spsa_group.add_argument("--t-max", type=int, default=50,
@@ -1836,6 +1836,29 @@ while True:
             t_rng.manual_seed(step * 31337 + 7)
             log_t = args.t_lognormal_mu + args.t_lognormal_sigma * torch.randn(1, generator=t_rng).item()
             current_T[0] = max(1, min(200, int(round(math.exp(log_t)))))
+        elif args.t_schedule == "exponential":
+            # Exponential ramp: spend more time at low T
+            # T = t_min * (t_max/t_min)^progress
+            progress = min(total_training_time / args.time_budget, 1.0)
+            ratio = max(args.t_max / max(args.t_min, 1), 1.0)
+            current_T[0] = max(1, int(args.t_min * (ratio ** progress)))
+        elif args.t_schedule == "curriculum":
+            # Curriculum: stay at t_min for 60% of training, then linear ramp to t_max
+            progress = min(total_training_time / args.time_budget, 1.0)
+            if progress < 0.6:
+                current_T[0] = args.t_min
+            else:
+                ramp_progress = (progress - 0.6) / 0.4
+                current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
+        elif args.t_schedule == "reverse":
+            # Reverse: start at t_max, ramp down to t_min
+            progress = min(total_training_time / args.time_budget, 1.0)
+            current_T[0] = max(1, int(args.t_max - (args.t_max - args.t_min) * progress))
+        elif args.t_schedule == "cyclic":
+            # Cyclic: alternate between t_min and t_max every 10% of training
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cycle = int(progress * 10) % 2
+            current_T[0] = args.t_min if cycle == 0 else args.t_max
 
         # SPSA step
         train_loss_f = trainer.step(spsa_loss_fn, step)
