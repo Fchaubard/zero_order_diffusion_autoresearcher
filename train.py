@@ -114,6 +114,17 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
     help="Batch accumulation steps for SPSA gradient estimation stability")
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
+spsa_group.add_argument("--t-schedule", type=str, default="fixed",
+    choices=["fixed", "linear", "lognormal"],
+    help="T schedule: fixed (constant T), linear (ramp T_min->T_max over training), lognormal (sample T ~ lognormal each step)")
+spsa_group.add_argument("--t-min", type=int, default=2,
+    help="Minimum T for linear schedule (start of training)")
+spsa_group.add_argument("--t-max", type=int, default=50,
+    help="Maximum T for linear schedule (end of training)")
+spsa_group.add_argument("--t-lognormal-mu", type=float, default=2.0,
+    help="Mu parameter for lognormal T sampling (log-space mean)")
+spsa_group.add_argument("--t-lognormal-sigma", type=float, default=1.0,
+    help="Sigma parameter for lognormal T sampling (log-space std)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception"],
     help="SPSA loss type for zero-order training")
@@ -1122,6 +1133,8 @@ if args.solver == "spsa":
     spsa_batches = []
     # Noise seed for deterministic ODE noise (same noise for +/- perturbations)
     noise_seed = [0]
+    # Dynamic T: set per step, used by loss function (same T for ±epsilon)
+    current_T = [args.denoising_steps]
     # Pre-generated random state for deterministic teacher loss across ±epsilon
     spsa_teacher_t = [None]       # timesteps (same for all perturbation evals)
     spsa_teacher_noise = [None]   # noise (same for all perturbation evals)
@@ -1140,6 +1153,7 @@ if args.solver == "spsa":
 
     def spsa_loss_fn(batch_idx=0):
         """SPSA training loss with multiple loss type options."""
+        T = current_T[0]  # Dynamic T, set per training step
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
         with torch.no_grad(), autocast_ctx:
             if args.spsa_loss_type == "teacher":
@@ -1155,7 +1169,7 @@ if args.solver == "spsa":
             elif args.spsa_loss_type == "denoising":
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
-                    denoising_steps=args.denoising_steps,
+                    denoising_steps=T,
                     noise_seed=noise_seed[0] + batch_idx,
                 )
             elif args.spsa_loss_type == "trajectory":
@@ -1168,15 +1182,15 @@ if args.solver == "spsa":
                 sigma_min = flow_matching.sigma_min
                 v_target = x_b - (1 - sigma_min) * noise
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
+                dt = 1.0 / T
                 total_loss = 0.0
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     total_loss += F.mse_loss(velocity, v_target).item()
                     x = x + velocity * dt
-                return total_loss / args.denoising_steps
+                return total_loss / T
             elif args.spsa_loss_type == "progressive":
                 # Per-step state matching: compare ODE state to ideal
                 # intermediate x_target(t) = t*x0 + (1-(1-σ)*t)*noise
@@ -1186,27 +1200,27 @@ if args.solver == "spsa":
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 sigma_min = flow_matching.sigma_min
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
+                dt = 1.0 / T
                 total_loss = 0.0
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
                     # Target state at t_{i+1}
-                    t_next = (i + 1) / args.denoising_steps
+                    t_next = (i + 1) / T
                     x_target = t_next * x_b + (1 - (1 - sigma_min) * t_next) * noise
                     total_loss += F.mse_loss(x, x_target).item()
-                return total_loss / args.denoising_steps
+                return total_loss / T
             elif args.spsa_loss_type == "inception":
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1223,9 +1237,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt_ode = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt_ode = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt_ode
@@ -1246,15 +1260,15 @@ if args.solver == "spsa":
                 sigma_min = flow_matching.sigma_min
                 v_target = x_b - (1 - sigma_min) * noise
                 x = noise.clone()
-                dt_ode = 1.0 / args.denoising_steps
+                dt_ode = 1.0 / T
                 total_loss = 0.0
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     total_loss += F.mse_loss(velocity, v_target).item()
                     x = x + velocity * dt_ode
-                traj_loss = total_loss / args.denoising_steps
+                traj_loss = total_loss / T
                 # Diversity: std of generated images across batch (higher = more diverse)
                 batch_std = x.std(dim=0).mean().item()
                 # We want high diversity, so subtract it from loss
@@ -1268,9 +1282,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1296,9 +1310,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1315,9 +1329,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1330,9 +1344,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1360,9 +1374,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1393,9 +1407,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1434,9 +1448,9 @@ if args.solver == "spsa":
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                 x = noise.clone()
-                dt = 1.0 / args.denoising_steps
-                for i in range(args.denoising_steps):
-                    t_val = i / args.denoising_steps
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
@@ -1603,6 +1617,21 @@ while True:
             x_ref = spsa_batches[0][0]
             spsa_teacher_t[0] = torch.rand(x_ref.shape[0], device='cuda', generator=gen_teacher)
             spsa_teacher_noise[0] = torch.randn(x_ref.shape, device='cuda', dtype=x_ref.dtype, generator=gen_teacher)
+
+        # Dynamic T scheduling (same T for ±epsilon within one step)
+        if args.t_schedule == "fixed":
+            current_T[0] = args.denoising_steps
+        elif args.t_schedule == "linear":
+            # Ramp from t_min to t_max over training
+            progress = min(total_training_time / args.time_budget, 1.0)
+            current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * progress))
+        elif args.t_schedule == "lognormal":
+            # Sample T ~ lognormal each step, clamp to [1, 200]
+            # Use deterministic seed so ±epsilon see same T
+            t_rng = torch.Generator()
+            t_rng.manual_seed(step * 31337 + 7)
+            log_t = args.t_lognormal_mu + args.t_lognormal_sigma * torch.randn(1, generator=t_rng).item()
+            current_T[0] = max(1, min(200, int(round(math.exp(log_t)))))
 
         # SPSA step
         train_loss_f = trainer.step(spsa_loss_fn, step)
