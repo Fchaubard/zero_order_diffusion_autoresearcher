@@ -620,10 +620,15 @@ class SPSATrainer:
             for i, (info, grad) in enumerate(zip(self.param_info, self.grads)):
                 g = grad.float()
                 self.m[i].mul_(self.adam_beta1).add_(g, alpha=1 - self.adam_beta1)
-                self.v[i].mul_(self.adam_beta2).addcmul_(g, g, value=1 - self.adam_beta2)
-                m_hat = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
-                v_hat = self.v[i] / (1 - self.adam_beta2 ** self.adam_step)
-                update = m_hat / (v_hat.sqrt() + self.adam_eps)
+                if self.adam_beta2 > 0:
+                    # Full Adam: momentum + adaptive LR
+                    self.v[i].mul_(self.adam_beta2).addcmul_(g, g, value=1 - self.adam_beta2)
+                    m_hat = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
+                    v_hat = self.v[i] / (1 - self.adam_beta2 ** self.adam_step)
+                    update = m_hat / (v_hat.sqrt() + self.adam_eps)
+                else:
+                    # Momentum-only SGD: just EMA of gradients, no normalization
+                    update = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
                 if self.weight_decay > 0:
                     update.add_(info['param'].data.view(-1).float(), alpha=self.weight_decay)
                 info['param'].data.view(-1).sub_(update, alpha=self.lr)
