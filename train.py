@@ -123,6 +123,8 @@ spsa_group.add_argument("--no-zero-init", action="store_true",
     help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
     help="Perturb one module at a time instead of all params (better gradient estimates)")
+spsa_group.add_argument("--fixed-batch-size", type=int, default=0,
+    help="If > 0, pre-load this many images and cycle through them 1-at-a-time (prevents mean prediction)")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -1476,6 +1478,17 @@ if args.solver == "spsa":
 # Training loop
 # ---------------------------------------------------------------------------
 
+# Pre-load fixed buffer if using fixed-batch mode
+fixed_buffer = None
+if args.fixed_batch_size > 0 and args.solver == "spsa":
+    fixed_buffer = []
+    print(f"Pre-loading {args.fixed_batch_size} fixed images for SPSA training...")
+    for i in range(args.fixed_batch_size):
+        x_b, y_b, _ = next(train_loader)
+        # Take just 1 image from each batch
+        fixed_buffer.append((x_b[:1], y_b[:1]))
+    print(f"  Loaded {len(fixed_buffer)} images (cycling 1-at-a-time)")
+
 t_start_training = time.time()
 smooth_train_loss = 0
 total_training_time = 0
@@ -1524,11 +1537,18 @@ while True:
         # ----- SPSA: zero-order, no teacher forcing -----
         # Load batches for this step (consistent across ±epsilon evaluations)
         spsa_batches.clear()
-        for _ in range(args.spsa_accum_steps):
-            x_b, y_b, epoch = next(train_loader)
+        if args.fixed_batch_size > 0 and fixed_buffer is not None:
+            # Use fixed buffer: cycle through images one at a time
+            idx = step % len(fixed_buffer)
+            x_b, y_b = fixed_buffer[idx]
             spsa_batches.append((x_b, y_b))
-
-        noise_seed[0] = step * 100
+            # Use fixed noise seed per image (same noise always paired with same image)
+            noise_seed[0] = idx * 100 + 42
+        else:
+            for _ in range(args.spsa_accum_steps):
+                x_b, y_b, epoch = next(train_loader)
+                spsa_batches.append((x_b, y_b))
+            noise_seed[0] = step * 100
 
         # Pre-generate deterministic t and noise for teacher loss
         # (must be identical across all ±epsilon evaluations within this step)
