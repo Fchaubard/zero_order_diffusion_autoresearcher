@@ -126,7 +126,8 @@ spsa_group.add_argument("--t-lognormal-mu", type=float, default=2.0,
 spsa_group.add_argument("--t-lognormal-sigma", type=float, default=1.0,
     help="Sigma parameter for lognormal T sampling (log-space std)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
-    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception"],
+    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
+             "ssim", "fft", "multiscale", "ssim_mse", "direct_fid"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
@@ -1143,7 +1144,7 @@ if args.solver == "spsa":
     spsa_inception = [None]
     spsa_ref_mu = [None]
     spsa_ref_sigma = [None]
-    if args.spsa_loss_type in ("inception", "minifid", "mmd_inception"):
+    if args.spsa_loss_type in ("inception", "minifid", "mmd_inception", "direct_fid"):
         import os as _os
         STATS_DIR = _os.path.join(_os.path.expanduser("~"), ".cache", "autoresearch", "stats")
         spsa_inception[0] = InceptionFeatureExtractor(device=str(device))
@@ -1481,6 +1482,163 @@ if args.solver == "spsa":
                        (K_yy * mask).sum() / (B * (B-1)) - \
                        2 * K_xy.mean()
                 return mmd2.item()
+            elif args.spsa_loss_type == "ssim":
+                # SSIM loss: Structural Similarity Index
+                # NOT differentiable through ODE — only possible with zero-order!
+                # SSIM captures luminance, contrast, and structure — perceptually better than MSE
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Compute SSIM between generated and target
+                # SSIM = (2*mu_x*mu_y + C1)(2*sigma_xy + C2) / ((mu_x^2 + mu_y^2 + C1)(sigma_x^2 + sigma_y^2 + C2))
+                x_f = x.float()
+                y_f = x_b.float()
+                C1 = 0.01 ** 2  # (K1*L)^2 where L=2 for [-1,1] range
+                C2 = 0.03 ** 2
+                # Use 11x11 Gaussian window via avg pooling (simpler, still captures structure)
+                kernel_size = 11
+                pad = kernel_size // 2
+                # Channel-wise processing
+                mu_x = F.avg_pool2d(x_f, kernel_size, stride=1, padding=pad)
+                mu_y = F.avg_pool2d(y_f, kernel_size, stride=1, padding=pad)
+                sigma_x2 = F.avg_pool2d(x_f * x_f, kernel_size, stride=1, padding=pad) - mu_x * mu_x
+                sigma_y2 = F.avg_pool2d(y_f * y_f, kernel_size, stride=1, padding=pad) - mu_y * mu_y
+                sigma_xy = F.avg_pool2d(x_f * y_f, kernel_size, stride=1, padding=pad) - mu_x * mu_y
+                ssim_map = ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) / \
+                           ((mu_x**2 + mu_y**2 + C1) * (sigma_x2 + sigma_y2 + C2))
+                # SSIM is in [-1, 1], higher is better. Return 1 - SSIM as loss.
+                return (1 - ssim_map.mean()).item()
+            elif args.spsa_loss_type == "ssim_mse":
+                # Combined SSIM + MSE: perceptual quality + pixel accuracy
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse = F.mse_loss(x_f, y_f).item()
+                # SSIM
+                C1, C2 = 0.01**2, 0.03**2
+                ks, pad = 11, 5
+                mu_x = F.avg_pool2d(x_f, ks, stride=1, padding=pad)
+                mu_y = F.avg_pool2d(y_f, ks, stride=1, padding=pad)
+                sigma_x2 = F.avg_pool2d(x_f**2, ks, stride=1, padding=pad) - mu_x**2
+                sigma_y2 = F.avg_pool2d(y_f**2, ks, stride=1, padding=pad) - mu_y**2
+                sigma_xy = F.avg_pool2d(x_f*y_f, ks, stride=1, padding=pad) - mu_x*mu_y
+                ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
+                ssim_loss = (1 - ssim.mean()).item()
+                return mse + ssim_loss
+            elif args.spsa_loss_type == "fft":
+                # Frequency domain loss: penalize spectral differences
+                # NOT differentiable through ODE — zero-order exclusive!
+                # Images have specific frequency characteristics that MSE ignores
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # 2D FFT of generated and target
+                x_f = x.float()
+                y_f = x_b.float()
+                fft_gen = torch.fft.fft2(x_f)
+                fft_real = torch.fft.fft2(y_f)
+                # Compare magnitude spectra (phase is noisy, magnitude captures structure)
+                mag_gen = torch.abs(fft_gen)
+                mag_real = torch.abs(fft_real)
+                # Log-magnitude for better dynamic range
+                log_mag_gen = torch.log1p(mag_gen)
+                log_mag_real = torch.log1p(mag_real)
+                return F.mse_loss(log_mag_gen, log_mag_real).item()
+            elif args.spsa_loss_type == "multiscale":
+                # Multi-scale loss: compare at original + downsampled resolutions
+                # Captures both fine detail and global structure
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                total_loss = 0.0
+                # Scale 1: full resolution (64x64)
+                total_loss += F.mse_loss(x_f, y_f).item()
+                # Scale 2: half resolution (32x32)
+                x_half = F.avg_pool2d(x_f, 2)
+                y_half = F.avg_pool2d(y_f, 2)
+                total_loss += F.mse_loss(x_half, y_half).item()
+                # Scale 3: quarter resolution (16x16)
+                x_quarter = F.avg_pool2d(x_f, 4)
+                y_quarter = F.avg_pool2d(y_f, 4)
+                total_loss += F.mse_loss(x_quarter, y_quarter).item()
+                return total_loss / 3.0
+            elif args.spsa_loss_type == "direct_fid":
+                # DIRECT FID as training loss — THE unique zero-order advantage!
+                # Backprop CANNOT optimize this: it requires differentiating through
+                # InceptionV3 + matrix square root. SPSA doesn't care!
+                # We compute a mini-FID between generated batch and reference stats.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                with torch.amp.autocast(device_type="cuda", enabled=False):
+                    samples = torch.clamp(x.float(), -1, 1)
+                    samples_01 = (samples + 1) / 2
+                    gen_features = spsa_inception[0].extract_features(samples_01)
+                gen_mu = np.mean(gen_features, axis=0)
+                gen_sigma = np.cov(gen_features, rowvar=False)
+                # Simplified FID: ||mu_gen - mu_ref||^2 + Tr(sigma_gen + sigma_ref - 2*sqrt(sigma_gen*sigma_ref))
+                # For small batch, sigma is rank-deficient, so we use a regularized version:
+                # FID ≈ ||mu_gen - mu_ref||^2 + Tr(sigma_gen) + Tr(sigma_ref) - 2*Tr(sqrt(sigma_gen@sigma_ref))
+                diff = gen_mu - spsa_ref_mu[0]
+                mean_term = float(np.dot(diff, diff))
+                # For the covariance term, use trace norm (simpler, avoids sqrtm instability)
+                trace_gen = float(np.trace(gen_sigma))
+                trace_ref = float(np.trace(spsa_ref_sigma[0]))
+                # Cross term via eigenvalue approximation
+                try:
+                    from scipy import linalg as sp_linalg
+                    product = gen_sigma @ spsa_ref_sigma[0]
+                    eigvals = np.real(sp_linalg.eigvals(product))
+                    eigvals = np.maximum(eigvals, 0)  # numerical stability
+                    cross_term = float(np.sum(np.sqrt(eigvals)))
+                except:
+                    cross_term = 0.0  # fallback: just use mean term
+                fid_approx = mean_term + trace_gen + trace_ref - 2 * cross_term
+                return fid_approx
 
     # Probe setup for LR search
     probe_data = [None, None]
