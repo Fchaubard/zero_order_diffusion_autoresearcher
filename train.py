@@ -124,7 +124,10 @@ spsa_group.add_argument("--no-zero-init", action="store_true",
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
     help="Perturb one module at a time instead of all params (better gradient estimates)")
 spsa_group.add_argument("--fixed-batch-size", type=int, default=0,
-    help="If > 0, pre-load this many images and cycle through them 1-at-a-time (prevents mean prediction)")
+    help="If > 0, pre-load this many images for SPSA training")
+spsa_group.add_argument("--fixed-batch-mode", type=str, default="cycle",
+    choices=["cycle", "all"],
+    help="cycle: train on 1 image at a time; all: train on all fixed images every step")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -1467,14 +1470,22 @@ if args.solver == "spsa":
 
 # Pre-load fixed buffer if using fixed-batch mode
 fixed_buffer = None
+fixed_all_batch = None  # Pre-concatenated batch for "all" mode
 if args.fixed_batch_size > 0 and args.solver == "spsa":
     fixed_buffer = []
     print(f"Pre-loading {args.fixed_batch_size} fixed images for SPSA training...")
     for i in range(args.fixed_batch_size):
         x_b, y_b, _ = next(train_loader)
-        # Take just 1 image from each batch
         fixed_buffer.append((x_b[:1], y_b[:1]))
-    print(f"  Loaded {len(fixed_buffer)} images (cycling 1-at-a-time)")
+    if args.fixed_batch_mode == "all":
+        # Concatenate all images into a single batch for simultaneous training
+        fixed_all_batch = (
+            torch.cat([fb[0] for fb in fixed_buffer], dim=0),
+            torch.cat([fb[1] for fb in fixed_buffer], dim=0),
+        )
+        print(f"  Loaded {len(fixed_buffer)} images (all-at-once mode, batch_size={fixed_all_batch[0].shape[0]})")
+    else:
+        print(f"  Loaded {len(fixed_buffer)} images (cycling 1-at-a-time)")
 
 t_start_training = time.time()
 smooth_train_loss = 0
@@ -1525,12 +1536,17 @@ while True:
         # Load batches for this step (consistent across ±epsilon evaluations)
         spsa_batches.clear()
         if args.fixed_batch_size > 0 and fixed_buffer is not None:
-            # Use fixed buffer: cycle through images one at a time
-            idx = step % len(fixed_buffer)
-            x_b, y_b = fixed_buffer[idx]
-            spsa_batches.append((x_b, y_b))
-            # Use fixed noise seed per image (same noise always paired with same image)
-            noise_seed[0] = idx * 100 + 42
+            if args.fixed_batch_mode == "all" and fixed_all_batch is not None:
+                # Use all fixed images every step
+                x_b, y_b = fixed_all_batch
+                spsa_batches.append((x_b, y_b))
+                noise_seed[0] = 42  # Same noise every step
+            else:
+                # Cycle through images one at a time
+                idx = step % len(fixed_buffer)
+                x_b, y_b = fixed_buffer[idx]
+                spsa_batches.append((x_b, y_b))
+                noise_seed[0] = idx * 100 + 42
         else:
             for _ in range(args.spsa_accum_steps):
                 x_b, y_b, epoch = next(train_loader)
