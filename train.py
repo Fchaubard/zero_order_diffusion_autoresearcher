@@ -115,7 +115,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
-    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div"],
+    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
@@ -1225,6 +1225,69 @@ if args.solver == "spsa":
                 batch_std = x.std(dim=0).mean().item()
                 # We want high diversity, so subtract it from loss
                 return traj_loss - 0.1 * batch_std
+            elif args.spsa_loss_type == "contrastive":
+                # Contrastive loss: each generated image should be closer to its
+                # own target than to other targets. Mean prediction fails this
+                # because the mean is equidistant from all targets.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Flatten to (B, D) for pairwise distances
+                B = x.shape[0]
+                x_flat = x.reshape(B, -1).float()
+                target_flat = x_b.reshape(B, -1).float()
+                # Pairwise L2 distances: dist[i,j] = ||gen_i - target_j||^2
+                # For each generated image i, we want dist[i,i] < dist[i,j] for j != i
+                dists = torch.cdist(x_flat, target_flat, p=2)  # (B, B)
+                # Contrastive: log-softmax along target dim, negative of diagonal
+                # Lower loss = generated images closer to their own targets
+                temperature = 0.1  # scale distances
+                log_probs = F.log_softmax(-dists / temperature, dim=1)
+                # We want the diagonal to have high probability
+                contrastive_loss = -log_probs.diag().mean().item()
+                return contrastive_loss
+            elif args.spsa_loss_type == "cosine":
+                # Cosine similarity loss: cares about direction, not magnitude
+                # Mean prediction has low cosine similarity to most targets
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Negative cosine similarity (lower = more similar)
+                x_flat = x.reshape(x.shape[0], -1).float()
+                target_flat = x_b.reshape(x_b.shape[0], -1).float()
+                cos_sim = F.cosine_similarity(x_flat, target_flat, dim=1)
+                return -cos_sim.mean().item()
+            elif args.spsa_loss_type == "huber":
+                # Huber loss: less sensitive to outliers than MSE
+                # May provide better gradients for SPSA
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                return F.smooth_l1_loss(x, x_b).item()
 
     # Probe setup for LR search
     probe_data = [None, None]
