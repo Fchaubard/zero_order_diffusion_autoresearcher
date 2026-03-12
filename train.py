@@ -115,7 +115,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
-    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber"],
+    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
@@ -1288,6 +1288,68 @@ if args.solver == "spsa":
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt
                 return F.smooth_l1_loss(x, x_b).item()
+            elif args.spsa_loss_type == "combo":
+                # Combined: MSE for signal + contrastive to prevent mean collapse
+                # Key insight: use feature-normalized contrastive (cosine-based)
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                B = x.shape[0]
+                x_flat = x.reshape(B, -1).float()
+                target_flat = x_b.reshape(B, -1).float()
+                # MSE component
+                mse = F.mse_loss(x, x_b).item()
+                # Contrastive on normalized features (cosine distance)
+                x_norm = F.normalize(x_flat, dim=1)
+                t_norm = F.normalize(target_flat, dim=1)
+                # Cosine similarity matrix
+                sim = x_norm @ t_norm.T  # (B, B), values in [-1, 1]
+                # InfoNCE with temperature
+                temperature = 0.5
+                log_probs = F.log_softmax(sim / temperature, dim=1)
+                contrastive = -log_probs.diag().mean().item()
+                # Combined: MSE drives toward targets, contrastive prevents collapse
+                return mse + 0.1 * contrastive
+            elif args.spsa_loss_type == "rank":
+                # Margin ranking loss: penalize when gen image is closer to
+                # wrong target than to correct target
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                B = x.shape[0]
+                x_flat = x.reshape(B, -1).float()
+                target_flat = x_b.reshape(B, -1).float()
+                # Per-sample MSE to each target
+                # dists[i,j] = mean((gen_i - target_j)^2)
+                dists = torch.cdist(x_flat, target_flat, p=2).pow(2) / x_flat.shape[1]
+                # For each sample, loss = max(0, d(gen_i, target_i) - min_j≠i(d(gen_i, target_j)) + margin)
+                diag = dists.diag()  # correct distances
+                # Set diagonal to inf to find min over other targets
+                dists_off = dists.clone()
+                dists_off.fill_diagonal_(float('inf'))
+                min_other = dists_off.min(dim=1).values  # closest wrong target
+                margin = 0.01
+                # Hinge loss: penalize when correct target isn't closest by margin
+                rank_loss = torch.clamp(diag - min_other + margin, min=0).mean().item()
+                # Also add plain MSE to provide signal toward targets
+                mse = diag.mean().item()
+                return mse + rank_loss
 
     # Probe setup for LR search
     probe_data = [None, None]
