@@ -991,21 +991,8 @@ model.init_weights(zero_init=zero_init)
 if not zero_init:
     print("Using non-zero init (small random outputs)")
 
-# For SPSA: optionally skip zero-init of final layers
-# Zero-init makes gradients w.r.t. all non-final params exactly zero,
-# which cripples SPSA gradient estimation (most perturbations contribute noise only)
-if hasattr(args, 'no_zero_init') and args.no_zero_init:
-    print("Skipping zero-init: final/gate layers get Xavier init for SPSA")
-    with torch.no_grad():
-        # Xavier init for final projection (same as all other layers)
-        nn.init.xavier_uniform_(model.final_proj.weight)
-        nn.init.zeros_(model.final_proj.bias)
-        nn.init.xavier_uniform_(model.final_adaLN[-1].weight)
-        nn.init.zeros_(model.final_adaLN[-1].bias)
-        # Xavier init for block adaLN modulations (gates)
-        for block in model.blocks:
-            nn.init.xavier_uniform_(block.adaLN_modulation[-1].weight)
-            nn.init.zeros_(block.adaLN_modulation[-1].bias)
+# Note: no-zero-init is already handled by model.init_weights(zero_init=False)
+# which scales output layers by 0.01x instead of zeroing them
 
 param_counts = model.num_scaling_params()
 print("Parameter counts:")
