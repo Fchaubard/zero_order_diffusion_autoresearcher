@@ -119,6 +119,12 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
+spsa_group.add_argument("--no-zero-init", action="store_true",
+    help="Skip zero-init of output layers (useful for SPSA to start with non-zero outputs)")
+spsa_group.add_argument("--layerwise-spsa", action="store_true",
+    help="Perturb one module at a time instead of all params (better gradient estimates)")
+spsa_group.add_argument("--no-zero-init", action="store_true",
+    help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -292,7 +298,7 @@ class DiT(nn.Module):
         return x
 
     @torch.no_grad()
-    def init_weights(self):
+    def init_weights(self, zero_init=True):
         # Standard Xavier init for linear layers
         def _basic_init(module):
             if isinstance(module, nn.Linear):
@@ -313,16 +319,23 @@ class DiT(nn.Module):
         # Label embedding
         nn.init.normal_(self.label_embed.embedding.weight, std=0.02)
 
-        # Zero-out AdaLN modulation outputs so gates start at zero
-        for block in self.blocks:
-            nn.init.zeros_(block.adaLN_modulation[-1].weight)
-            nn.init.zeros_(block.adaLN_modulation[-1].bias)
+        if zero_init:
+            # Zero-out AdaLN modulation outputs so gates start at zero
+            for block in self.blocks:
+                nn.init.zeros_(block.adaLN_modulation[-1].weight)
+                nn.init.zeros_(block.adaLN_modulation[-1].bias)
 
-        # Zero-out final projection (DiT zero-init)
-        nn.init.zeros_(self.final_proj.weight)
-        nn.init.zeros_(self.final_proj.bias)
-        nn.init.zeros_(self.final_adaLN[-1].weight)
-        nn.init.zeros_(self.final_adaLN[-1].bias)
+            # Zero-out final projection (DiT zero-init)
+            nn.init.zeros_(self.final_proj.weight)
+            nn.init.zeros_(self.final_proj.bias)
+            nn.init.zeros_(self.final_adaLN[-1].weight)
+            nn.init.zeros_(self.final_adaLN[-1].bias)
+        else:
+            # Scale down output layers instead of zeroing (small initial output)
+            for block in self.blocks:
+                block.adaLN_modulation[-1].weight.data.mul_(0.01)
+            self.final_proj.weight.data.mul_(0.01)
+            self.final_adaLN[-1].weight.data.mul_(0.01)
 
     def estimate_flops(self):
         """Estimated FLOPs per image (forward + backward)."""
@@ -442,7 +455,7 @@ class SPSATrainer:
 
     def __init__(self, model, lr, epsilon, n_perts, use_curvature,
                  saturating_alpha, lambda_reg, memory_efficient,
-                 accum_steps, weight_decay):
+                 accum_steps, weight_decay, layerwise=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -452,10 +465,29 @@ class SPSATrainer:
         self.memory_efficient = memory_efficient
         self.accum_steps = accum_steps
         self.weight_decay = weight_decay
+        self.layerwise = layerwise
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
         self.packed_size = (self.total + 7) // 8
+
+        # For layerwise SPSA: group params by module
+        if layerwise:
+            self.param_groups = []
+            for name, module in model.named_modules():
+                module_params = [p for p in module.parameters(recurse=False) if p.requires_grad]
+                if module_params:
+                    total = sum(p.numel() for p in module_params)
+                    self.param_groups.append({
+                        'name': name,
+                        'params': module_params,
+                        'total': total,
+                        'packed_size': (total + 7) // 8,
+                    })
+            self.current_group = 0
+            print(f"  Layerwise SPSA: {len(self.param_groups)} parameter groups")
+            for g in self.param_groups:
+                print(f"    {g['name']}: {g['total']:,} params")
 
         # Compute offsets for bit-packed perturbations
         self.param_info = []
@@ -486,6 +518,8 @@ class SPSATrainer:
 
     def step(self, loss_fn, iteration):
         """Perform one SPSA step. loss_fn(batch_idx) -> float."""
+        if self.layerwise:
+            return self._step_layerwise(loss_fn, iteration)
         if self.memory_efficient:
             return self._step_memory_efficient(loss_fn, iteration)
 
@@ -561,6 +595,91 @@ class SPSATrainer:
         # Apply weight decay
         if self.weight_decay > 0:
             for info in self.param_info:
+                info['param'].data.mul_(1 - self.lr * self.weight_decay)
+
+        return total_loss / self.n_perts
+
+    def _step_layerwise(self, loss_fn, iteration):
+        """Layerwise SPSA: perturb one parameter group at a time, rotate each step."""
+        group = self.param_groups[self.current_group % len(self.param_groups)]
+        self.current_group += 1
+
+        # Build param_info for this group only
+        group_info = []
+        offset = 0
+        for p in group['params']:
+            numel = p.numel()
+            group_info.append({
+                'param': p,
+                'offset': offset,
+                'packed_offset': offset // 8,
+                'numel': numel,
+                'grid': ((numel + TRITON_BLOCK_SIZE - 1) // TRITON_BLOCK_SIZE,),
+            })
+            offset += numel
+
+        packed_size = group['packed_size']
+        grads = [torch.zeros(info['numel'], device='cuda', dtype=torch.bfloat16) for info in group_info]
+        total_loss = 0.0
+
+        if self.use_curvature:
+            loss_clean = 0.0
+            for batch_idx in range(self.accum_steps):
+                loss_clean += loss_fn(batch_idx)
+            loss_clean /= self.accum_steps
+
+        for pert_idx in range(self.n_perts):
+            torch.manual_seed(iteration * 10000 + pert_idx)
+            packed = torch.randint(0, 256, (packed_size,), device='cuda', dtype=torch.uint8)
+
+            for info in group_info:
+                flat = info['param'].data.view(-1)
+                _unpack_and_apply[info['grid']](
+                    flat, packed[info['packed_offset']:],
+                    info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+            loss_plus = 0.0
+            for batch_idx in range(self.accum_steps):
+                loss_plus += loss_fn(batch_idx)
+            loss_plus /= self.accum_steps
+
+            for info in group_info:
+                flat = info['param'].data.view(-1)
+                _unpack_and_apply[info['grid']](
+                    flat, packed[info['packed_offset']:],
+                    info['numel'], -2 * self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+            loss_minus = 0.0
+            for batch_idx in range(self.accum_steps):
+                loss_minus += loss_fn(batch_idx)
+            loss_minus /= self.accum_steps
+
+            for info in group_info:
+                flat = info['param'].data.view(-1)
+                _unpack_and_apply[info['grid']](
+                    flat, packed[info['packed_offset']:],
+                    info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+            if self.use_curvature:
+                curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
+                curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
+                grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+            else:
+                grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
+
+            for i, info in enumerate(group_info):
+                _unpack_and_accumulate[info['grid']](
+                    grads[i], packed[info['packed_offset']:],
+                    info['numel'], grad_coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+            total_loss += (loss_plus + loss_minus) / 2
+            del packed
+
+        for info, grad in zip(group_info, grads):
+            info['param'].data.view(-1).sub_(grad, alpha=self.lr)
+
+        if self.weight_decay > 0:
+            for info in group_info:
                 info['param'].data.mul_(1 - self.lr * self.weight_decay)
 
         return total_loss / self.n_perts
@@ -867,7 +986,26 @@ print(f"Model config: {asdict(config)}")
 with torch.device("meta"):
     model = DiT(config)
 model.to_empty(device=device)
-model.init_weights()
+zero_init = not getattr(args, 'no_zero_init', False)
+model.init_weights(zero_init=zero_init)
+if not zero_init:
+    print("Using non-zero init (small random outputs)")
+
+# For SPSA: optionally skip zero-init of final layers
+# Zero-init makes gradients w.r.t. all non-final params exactly zero,
+# which cripples SPSA gradient estimation (most perturbations contribute noise only)
+if hasattr(args, 'no_zero_init') and args.no_zero_init:
+    print("Skipping zero-init: final/gate layers get Xavier init for SPSA")
+    with torch.no_grad():
+        # Xavier init for final projection (same as all other layers)
+        nn.init.xavier_uniform_(model.final_proj.weight)
+        nn.init.zeros_(model.final_proj.bias)
+        nn.init.xavier_uniform_(model.final_adaLN[-1].weight)
+        nn.init.zeros_(model.final_adaLN[-1].bias)
+        # Xavier init for block adaLN modulations (gates)
+        for block in model.blocks:
+            nn.init.xavier_uniform_(block.adaLN_modulation[-1].weight)
+            nn.init.zeros_(block.adaLN_modulation[-1].bias)
 
 param_counts = model.num_scaling_params()
 print("Parameter counts:")
@@ -908,6 +1046,7 @@ else:
         saturating_alpha=args.saturating_alpha, lambda_reg=args.lambda_reg,
         memory_efficient=args.memory_efficient,
         accum_steps=args.spsa_accum_steps, weight_decay=args.spsa_weight_decay,
+        layerwise=args.layerwise_spsa,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
