@@ -1096,7 +1096,7 @@ if args.solver == "spsa":
     spsa_inception = [None]
     spsa_ref_mu = [None]
     spsa_ref_sigma = [None]
-    if args.spsa_loss_type in ("inception", "minifid"):
+    if args.spsa_loss_type in ("inception", "minifid", "mmd_inception"):
         import os as _os
         STATS_DIR = _os.path.join(_os.path.expanduser("~"), ".cache", "autoresearch", "stats")
         spsa_inception[0] = InceptionFeatureExtractor(device=str(device))
