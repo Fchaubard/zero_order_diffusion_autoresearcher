@@ -950,13 +950,26 @@ if args.solver == "spsa":
     spsa_batches = []
     # Noise seed for deterministic ODE noise (same noise for +/- perturbations)
     noise_seed = [0]
+    # Pre-generated random state for deterministic teacher loss across ±epsilon
+    spsa_teacher_t = [None]       # timesteps (same for all perturbation evals)
+    spsa_teacher_noise = [None]   # noise (same for all perturbation evals)
 
     def spsa_loss_fn(batch_idx=0):
-        """SPSA training loss: teacher-forced (fast) or full ODE denoising."""
+        """SPSA training loss: teacher-forced (fast) or full ODE denoising.
+        Uses pre-generated t and noise for teacher loss to ensure identical
+        random state across ±epsilon perturbation evaluations."""
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
         with torch.no_grad(), autocast_ctx:
             if args.spsa_loss_type == "teacher":
-                return flow_matching.train_loss(model, x_b, class_labels=y_b).item()
+                # Use pre-generated t and noise for determinism across ±eps
+                t = spsa_teacher_t[0]
+                noise = spsa_teacher_noise[0]
+                sigma_min = flow_matching.sigma_min
+                t_exp = t.float().view(-1, 1, 1, 1)
+                x_t = t_exp * x_b + (1 - (1 - sigma_min) * t_exp) * noise
+                velocity_target = x_b - (1 - sigma_min) * noise
+                predicted = model(x_t, t, class_labels=y_b)
+                return F.mse_loss(predicted, velocity_target).item()
             else:
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
@@ -979,7 +992,17 @@ if args.solver == "spsa":
         """Fixed-batch loss for LR probing."""
         with torch.no_grad(), autocast_ctx:
             if args.spsa_loss_type == "teacher":
-                return flow_matching.train_loss(model, probe_data[0], class_labels=probe_data[1]).item()
+                # Use pre-generated t and noise for determinism
+                t = spsa_teacher_t[0]
+                noise = spsa_teacher_noise[0]
+                x_p = probe_data[0]
+                sigma_min = flow_matching.sigma_min
+                t_exp = t[:x_p.shape[0]].float().view(-1, 1, 1, 1)
+                noise_p = noise[:x_p.shape[0]]
+                x_t = t_exp * x_p + (1 - (1 - sigma_min) * t_exp) * noise_p
+                velocity_target = x_p - (1 - sigma_min) * noise_p
+                predicted = model(x_t, t[:x_p.shape[0]], class_labels=probe_data[1])
+                return F.mse_loss(predicted, velocity_target).item()
             else:
                 return flow_matching.denoising_loss(
                     model, probe_data[0], class_labels=probe_data[1],
@@ -1060,6 +1083,15 @@ while True:
             spsa_batches.append((x_b, y_b))
 
         noise_seed[0] = step * 100
+
+        # Pre-generate deterministic t and noise for teacher loss
+        # (must be identical across all ±epsilon evaluations within this step)
+        if args.spsa_loss_type == "teacher":
+            gen_teacher = torch.Generator(device='cuda')
+            gen_teacher.manual_seed(step * 777 + 42)
+            x_ref = spsa_batches[0][0]
+            spsa_teacher_t[0] = torch.rand(x_ref.shape[0], device='cuda', generator=gen_teacher)
+            spsa_teacher_noise[0] = torch.randn(x_ref.shape, device='cuda', dtype=x_ref.dtype, generator=gen_teacher)
 
         # SPSA step
         train_loss_f = trainer.step(spsa_loss_fn, step)
