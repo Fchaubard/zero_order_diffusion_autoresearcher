@@ -26,7 +26,8 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from prepare import IMG_SIZE, IMG_CHANNELS, NUM_CLASSES, TIME_BUDGET, FlowMatching, make_dataloader, evaluate_fid
+import numpy as np
+from prepare import IMG_SIZE, IMG_CHANNELS, NUM_CLASSES, TIME_BUDGET, FlowMatching, make_dataloader, evaluate_fid, InceptionFeatureExtractor
 
 # ---------------------------------------------------------------------------
 # CLI Arguments
@@ -114,8 +115,8 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
-    choices=["teacher", "denoising"],
-    help="SPSA loss: 'teacher' (1 fwd pass, fast) or 'denoising' (T fwd passes, slow)")
+    choices=["teacher", "denoising", "trajectory", "progressive", "inception"],
+    help="SPSA loss: 'teacher' (1 fwd pass), 'denoising' (final MSE), 'trajectory' (per-step velocity MSE), 'progressive' (per-step state MSE), 'inception' (feature matching)")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 
@@ -954,10 +955,18 @@ if args.solver == "spsa":
     spsa_teacher_t = [None]       # timesteps (same for all perturbation evals)
     spsa_teacher_noise = [None]   # noise (same for all perturbation evals)
 
+    # Inception feature matching setup
+    spsa_inception = [None]
+    spsa_ref_mu = [None]
+    if args.spsa_loss_type == "inception":
+        import os as _os
+        STATS_DIR = _os.path.join(_os.path.expanduser("~"), ".cache", "autoresearch", "stats")
+        spsa_inception[0] = InceptionFeatureExtractor(device=str(device))
+        spsa_ref_mu[0] = np.load(_os.path.join(STATS_DIR, "fid_mu.npy"))
+        print(f"Inception feature matching: loaded reference stats (dim={spsa_ref_mu[0].shape[0]})")
+
     def spsa_loss_fn(batch_idx=0):
-        """SPSA training loss: teacher-forced (fast) or full ODE denoising.
-        Uses pre-generated t and noise for teacher loss to ensure identical
-        random state across ±epsilon perturbation evaluations."""
+        """SPSA training loss with multiple loss type options."""
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
         with torch.no_grad(), autocast_ctx:
             if args.spsa_loss_type == "teacher":
@@ -970,12 +979,73 @@ if args.solver == "spsa":
                 velocity_target = x_b - (1 - sigma_min) * noise
                 predicted = model(x_t, t, class_labels=y_b)
                 return F.mse_loss(predicted, velocity_target).item()
-            else:
+            elif args.spsa_loss_type == "denoising":
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
                     denoising_steps=args.denoising_steps,
                     noise_seed=noise_seed[0] + batch_idx,
                 )
+            elif args.spsa_loss_type == "trajectory":
+                # Per-step velocity matching: compare predicted velocity to
+                # flow matching target at each ODE step. Gives T signals.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                sigma_min = flow_matching.sigma_min
+                v_target = x_b - (1 - sigma_min) * noise
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                total_loss = 0.0
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    total_loss += F.mse_loss(velocity, v_target).item()
+                    x = x + velocity * dt
+                return total_loss / args.denoising_steps
+            elif args.spsa_loss_type == "progressive":
+                # Per-step state matching: compare ODE state to ideal
+                # intermediate x_target(t) = t*x0 + (1-(1-σ)*t)*noise
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                sigma_min = flow_matching.sigma_min
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                total_loss = 0.0
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    # Target state at t_{i+1}
+                    t_next = (i + 1) / args.denoising_steps
+                    x_target = t_next * x_b + (1 - (1 - sigma_min) * t_next) * noise
+                    total_loss += F.mse_loss(x, x_target).item()
+                return total_loss / args.denoising_steps
+            elif args.spsa_loss_type == "inception":
+                # Inception feature matching: generate samples via ODE,
+                # extract inception features, compute squared distance to
+                # reference feature mean. Directly optimizes FID.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Extract features and compare to reference
+                samples = torch.clamp(x.float(), -1, 1)
+                samples_01 = (samples + 1) / 2
+                gen_features = spsa_inception[0].extract_features(samples_01)
+                gen_mu = np.mean(gen_features, axis=0)
+                return float(np.sum((gen_mu - spsa_ref_mu[0]) ** 2))
 
     # Probe setup for LR search
     probe_data = [None, None]
@@ -989,26 +1059,15 @@ if args.solver == "spsa":
     resample_probe_batch(0)
 
     def probe_loss_fn():
-        """Fixed-batch loss for LR probing."""
-        with torch.no_grad(), autocast_ctx:
-            if args.spsa_loss_type == "teacher":
-                # Use pre-generated t and noise for determinism
-                t = spsa_teacher_t[0]
-                noise = spsa_teacher_noise[0]
-                x_p = probe_data[0]
-                sigma_min = flow_matching.sigma_min
-                t_exp = t[:x_p.shape[0]].float().view(-1, 1, 1, 1)
-                noise_p = noise[:x_p.shape[0]]
-                x_t = t_exp * x_p + (1 - (1 - sigma_min) * t_exp) * noise_p
-                velocity_target = x_p - (1 - sigma_min) * noise_p
-                predicted = model(x_t, t[:x_p.shape[0]], class_labels=probe_data[1])
-                return F.mse_loss(predicted, velocity_target).item()
-            else:
-                return flow_matching.denoising_loss(
-                    model, probe_data[0], class_labels=probe_data[1],
-                    denoising_steps=args.denoising_steps,
-                    noise_seed=42,
-                )
+        """Fixed-batch loss for LR probing. Delegates to spsa_loss_fn."""
+        # Temporarily set probe data as spsa_batches for probe eval
+        old_batches = list(spsa_batches)
+        spsa_batches.clear()
+        spsa_batches.append((probe_data[0], probe_data[1]))
+        result = spsa_loss_fn(batch_idx=0)
+        spsa_batches.clear()
+        spsa_batches.extend(old_batches)
+        return result
 
     # Initial LR search if strategy != none and != local
     if args.search_strategy == "line":
