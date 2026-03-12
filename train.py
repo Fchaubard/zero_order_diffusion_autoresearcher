@@ -127,11 +127,14 @@ spsa_group.add_argument("--t-lognormal-sigma", type=float, default=1.0,
     help="Sigma parameter for lognormal T sampling (log-space std)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
-             "ssim", "fft", "multiscale", "ssim_mse", "direct_fid"],
+             "ssim", "fft", "multiscale", "ssim_mse", "direct_fid",
+             "multi_step", "multi_step_exp"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
          "E.g. 0.3 = use MSE for first 30%%, then switch to target loss (enables warm start for perceptual losses)")
+spsa_group.add_argument("--vary-noise", action="store_true",
+    help="Vary noise seed each step (prevents overfitting to one noise realization in fixed-batch mode)")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 spsa_group.add_argument("--no-zero-init", action="store_true",
@@ -1190,6 +1193,32 @@ if args.solver == "spsa":
                     denoising_steps=T,
                     noise_seed=noise_seed[0] + batch_idx,
                 )
+            elif loss_type in ("multi_step", "multi_step_exp"):
+                # Multi-step denoising: sum MSE(x_t, x_clean) at each ODE step
+                # multi_step: uniform weighting
+                # multi_step_exp: exponentially increasing weight toward later steps
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                total_weight = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    step_loss = F.mse_loss(x, x_b).item()
+                    if loss_type == "multi_step_exp":
+                        # Exponential weight: 2^(i/T) — later steps weighted more
+                        w = 2.0 ** (i / T)
+                    else:
+                        w = 1.0
+                    total_loss += w * step_loss
+                    total_weight += w
+                return total_loss / total_weight
             elif loss_type == "trajectory":
                 # Per-step velocity matching: compare predicted velocity to
                 # flow matching target at each ODE step. Gives T signals.
@@ -1771,7 +1800,7 @@ while True:
                 # Use all fixed images every step
                 x_b, y_b = fixed_all_batch
                 spsa_batches.append((x_b, y_b))
-                noise_seed[0] = 42  # Same noise every step
+                noise_seed[0] = (42 + step) if args.vary_noise else 42
             else:
                 # Cycle through images one at a time
                 idx = step % len(fixed_buffer)
