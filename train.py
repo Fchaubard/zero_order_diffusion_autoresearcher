@@ -115,7 +115,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
-    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank"],
+    choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
@@ -1350,6 +1350,89 @@ if args.solver == "spsa":
                 # Also add plain MSE to provide signal toward targets
                 mse = diag.mean().item()
                 return mse + rank_loss
+            elif args.spsa_loss_type == "mmd":
+                # Maximum Mean Discrepancy on raw pixels
+                # Compares distribution of generated vs real images
+                # Mean prediction gives high MMD because point mass ≠ distribution
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                B = x.shape[0]
+                x_flat = x.reshape(B, -1).float()
+                y_flat = x_b.reshape(B, -1).float()
+                # Gaussian kernel MMD^2
+                # k(x,y) = exp(-||x-y||^2 / (2*sigma^2))
+                # Use median heuristic for sigma
+                with torch.no_grad():
+                    all_dists = torch.cdist(
+                        torch.cat([x_flat, y_flat], dim=0),
+                        torch.cat([x_flat, y_flat], dim=0),
+                        p=2
+                    )
+                    sigma = all_dists.median().item() + 1e-6
+                sigma2 = 2 * sigma * sigma
+                # K_xx, K_yy, K_xy
+                xx_dists = torch.cdist(x_flat, x_flat, p=2).pow(2)
+                yy_dists = torch.cdist(y_flat, y_flat, p=2).pow(2)
+                xy_dists = torch.cdist(x_flat, y_flat, p=2).pow(2)
+                K_xx = torch.exp(-xx_dists / sigma2)
+                K_yy = torch.exp(-yy_dists / sigma2)
+                K_xy = torch.exp(-xy_dists / sigma2)
+                # MMD^2 = E[K_xx] + E[K_yy] - 2*E[K_xy]
+                # Exclude diagonal for unbiased estimate
+                mask = 1 - torch.eye(B, device=dev)
+                mmd2 = (K_xx * mask).sum() / (B * (B-1)) + \
+                       (K_yy * mask).sum() / (B * (B-1)) - \
+                       2 * K_xy.mean()
+                return mmd2.item()
+            elif args.spsa_loss_type == "mmd_inception":
+                # MMD on InceptionV3 features (more semantically meaningful)
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / args.denoising_steps
+                for i in range(args.denoising_steps):
+                    t_val = i / args.denoising_steps
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                with torch.amp.autocast(device_type="cuda", enabled=False):
+                    gen_samples = torch.clamp(x.float(), -1, 1)
+                    gen_01 = (gen_samples + 1) / 2
+                    real_01 = (x_b.float() + 1) / 2
+                    gen_feat = torch.from_numpy(
+                        spsa_inception[0].extract_features(gen_01)
+                    ).float().to(dev)
+                    real_feat = torch.from_numpy(
+                        spsa_inception[0].extract_features(real_01)
+                    ).float().to(dev)
+                B = gen_feat.shape[0]
+                # MMD with Gaussian kernel on inception features
+                all_feat = torch.cat([gen_feat, real_feat], dim=0)
+                all_dists = torch.cdist(all_feat, all_feat, p=2)
+                sigma = all_dists.median().item() + 1e-6
+                sigma2 = 2 * sigma * sigma
+                xx_dists = torch.cdist(gen_feat, gen_feat, p=2).pow(2)
+                yy_dists = torch.cdist(real_feat, real_feat, p=2).pow(2)
+                xy_dists = torch.cdist(gen_feat, real_feat, p=2).pow(2)
+                K_xx = torch.exp(-xx_dists / sigma2)
+                K_yy = torch.exp(-yy_dists / sigma2)
+                K_xy = torch.exp(-xy_dists / sigma2)
+                mask = 1 - torch.eye(B, device=dev)
+                mmd2 = (K_xx * mask).sum() / (B * (B-1)) + \
+                       (K_yy * mask).sum() / (B * (B-1)) - \
+                       2 * K_xy.mean()
+                return mmd2.item()
 
     # Probe setup for LR search
     probe_data = [None, None]
