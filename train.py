@@ -125,6 +125,8 @@ spsa_group.add_argument("--t-lognormal-mu", type=float, default=2.0,
     help="Mu parameter for lognormal T sampling (log-space mean)")
 spsa_group.add_argument("--t-lognormal-sigma", type=float, default=1.0,
     help="Sigma parameter for lognormal T sampling (log-space std)")
+spsa_group.add_argument("--curriculum-frac", type=float, default=0.6,
+    help="Fraction of training to stay at t_min before ramping to t_max (for curriculum schedule)")
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
              "ssim", "fft", "multiscale", "ssim_mse", "direct_fid",
@@ -1843,12 +1845,13 @@ while True:
             ratio = max(args.t_max / max(args.t_min, 1), 1.0)
             current_T[0] = max(1, int(args.t_min * (ratio ** progress)))
         elif args.t_schedule == "curriculum":
-            # Curriculum: stay at t_min for 60% of training, then linear ramp to t_max
+            # Curriculum: stay at t_min for curriculum_frac of training, then linear ramp to t_max
             progress = min(total_training_time / args.time_budget, 1.0)
-            if progress < 0.6:
+            cf = args.curriculum_frac
+            if progress < cf:
                 current_T[0] = args.t_min
             else:
-                ramp_progress = (progress - 0.6) / 0.4
+                ramp_progress = (progress - cf) / (1.0 - cf)
                 current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
         elif args.t_schedule == "reverse":
             # Reverse: start at t_max, ramp down to t_min
