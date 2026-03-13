@@ -132,7 +132,10 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
              "ssim", "fft", "multiscale", "ssim_mse", "direct_fid",
              "multi_step", "multi_step_exp",
-             "loss_ensemble", "ssim_mse_fft", "hist_match"],
+             "loss_ensemble", "ssim_mse_fft", "hist_match",
+             "denoising_midpoint", "denoising_rk4", "denoising_logmse",
+             "denoising_multiscale", "denoising_heun", "denoising_cosine_steps",
+             "denoising_warm_restart"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -167,6 +170,9 @@ spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
 spsa_group.add_argument("--guided-pert", type=float, default=0.0,
     help="Fraction of perturbation from gradient EMA sign (0=pure random, 0.5=half guided). "
          "Biases perturbations toward known-good directions while maintaining exploration.")
+spsa_group.add_argument("--antithetic", action="store_true",
+    help="Use antithetic perturbation pairs: for each random direction, also use its complement. "
+         "Reduces gradient variance. Halves unique directions but improves estimate quality.")
 spsa_group.add_argument("--no-zero-init", action="store_true",
     help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
@@ -524,7 +530,7 @@ class SPSATrainer:
                  accum_steps, weight_decay, layerwise=False,
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
-                 pert_recycle=1, median_clip=0.0):
+                 pert_recycle=1, median_clip=0.0, antithetic=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -546,6 +552,7 @@ class SPSATrainer:
         self.pert_recycle = pert_recycle
         self.median_clip = median_clip
         self.sign_update = sign_update
+        self.antithetic = antithetic
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -644,8 +651,15 @@ class SPSATrainer:
             # Generate bit-packed Rademacher random (8x less memory than full float)
             # With pert_recycle > 1, reuse same perturbation directions across consecutive steps
             seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
-            torch.manual_seed(seed_iter * 10000 + pert_idx)
-            packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+            # Antithetic pairs: first half are random, second half are bitwise complement
+            if self.antithetic and pert_idx >= self.n_perts // 2:
+                base_idx = pert_idx - self.n_perts // 2
+                torch.manual_seed(seed_iter * 10000 + base_idx)
+                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                packed = ~packed  # bitwise complement = opposite direction
+            else:
+                torch.manual_seed(seed_iter * 10000 + pert_idx)
+                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
 
             # Guided perturbations: bias toward gradient EMA sign direction
             if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
@@ -1247,6 +1261,7 @@ else:
         sign_update=args.sign_update,
         pert_recycle=args.pert_recycle,
         median_clip=args.median_clip,
+        antithetic=args.antithetic,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
@@ -1343,6 +1358,162 @@ if args.solver == "spsa":
                     denoising_steps=T,
                     noise_seed=noise_seed[0] + batch_idx,
                 )
+            elif loss_type == "denoising_midpoint":
+                # Midpoint method (2nd order) ODE solver for denoising
+                # Only possible with zero-order: doesn't need differentiability!
+                # Better ODE integration = more accurate loss = less noisy SPSA gradient
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    # k1 = velocity at current point
+                    k1 = model(x, t_tensor, class_labels=y_b)
+                    # Midpoint: evaluate at t + dt/2 with x + k1*dt/2
+                    t_mid = torch.full((x_b.shape[0],), min(t_val + dt/2, 1.0), device=dev)
+                    x_mid = x + k1 * (dt / 2)
+                    k2 = model(x_mid, t_mid, class_labels=y_b)
+                    # Update using midpoint velocity
+                    x = x + k2 * dt
+                return F.mse_loss(x, x_b).item()
+            elif loss_type == "denoising_rk4":
+                # 4th-order Runge-Kutta ODE solver for denoising
+                # Dramatically better integration accuracy, only possible with zero-order
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    t_mid = torch.full((x_b.shape[0],), min(t_val + dt/2, 1.0), device=dev)
+                    t_end = torch.full((x_b.shape[0],), min(t_val + dt, 1.0), device=dev)
+                    k1 = model(x, t_tensor, class_labels=y_b)
+                    k2 = model(x + k1 * (dt/2), t_mid, class_labels=y_b)
+                    k3 = model(x + k2 * (dt/2), t_mid, class_labels=y_b)
+                    k4 = model(x + k3 * dt, t_end, class_labels=y_b)
+                    x = x + (k1 + 2*k2 + 2*k3 + k4) * (dt / 6)
+                return F.mse_loss(x, x_b).item()
+            elif loss_type == "denoising_logmse":
+                # Log-MSE loss: log(MSE) gives larger gradient signal when loss is small
+                # Changes the SPSA gradient landscape - gradient magnitude doesn't decay with loss
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                mse = F.mse_loss(x, x_b).item()
+                import math
+                return math.log(mse + 1e-8)
+            elif loss_type == "denoising_multiscale":
+                # Multi-scale MSE: compute MSE at original + downsampled resolutions
+                # Captures both fine detail and global structure
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Scale 1: full resolution
+                loss_full = F.mse_loss(x, x_b).item()
+                # Scale 2: 2x downsampled
+                x_down2 = F.avg_pool2d(x, 2)
+                target_down2 = F.avg_pool2d(x_b, 2)
+                loss_2x = F.mse_loss(x_down2, target_down2).item()
+                # Scale 3: 4x downsampled
+                x_down4 = F.avg_pool2d(x, 4)
+                target_down4 = F.avg_pool2d(x_b, 4)
+                loss_4x = F.mse_loss(x_down4, target_down4).item()
+                # Weighted combination (more weight on fine detail)
+                return 0.5 * loss_full + 0.3 * loss_2x + 0.2 * loss_4x
+            elif loss_type == "denoising_heun":
+                # Heun's method (improved Euler / trapezoidal rule)
+                # 2nd order like midpoint but uses trapezoidal average of endpoints
+                # Formula: x_{n+1} = x_n + dt/2 * (k1 + k2)
+                # where k1 = f(t_n, x_n), k2 = f(t_{n+1}, x_n + dt*k1)
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    k1 = model(x, t_tensor, class_labels=y_b)
+                    # Predictor: Euler step to get x_predicted
+                    x_pred = x + k1 * dt
+                    t_end = torch.full((x_b.shape[0],), min(t_val + dt, 1.0), device=dev)
+                    k2 = model(x_pred, t_end, class_labels=y_b)
+                    # Corrector: trapezoidal average
+                    x = x + (k1 + k2) * (dt / 2)
+                return F.mse_loss(x, x_b).item()
+            elif loss_type == "denoising_cosine_steps":
+                # Cosine-spaced ODE timesteps: cluster steps near t=0 and t=1
+                # where dynamics change fastest. Better integration for same # of steps.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                # Generate cosine-spaced timesteps from 0 to 1
+                # t_i = 0.5 * (1 - cos(pi * i / T)) maps [0,T] -> [0,1] with clustering at endpoints
+                t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                for i in range(T):
+                    t_val = t_points[i]
+                    dt_i = t_points[i + 1] - t_points[i]
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt_i
+                return F.mse_loss(x, x_b).item()
+            elif loss_type == "denoising_warm_restart":
+                # Warm restart denoising: run ODE, compute MSE, then use the
+                # current prediction as a better starting point and run again.
+                # 2 full ODE passes: first rough, second refined. Only possible
+                # with zero-order since we don't need to backprop through both passes.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                # First pass: standard Euler
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # x is now the first-pass prediction
+                # Second pass: blend prediction with noise and re-denoise
+                # Start from 50% noise + 50% prediction (like starting from t=0.5)
+                x_blend = 0.5 * noise + 0.5 * x
+                half_T = max(T // 2, 1)
+                dt2 = 0.5 / half_T  # Only integrate from t=0.5 to t=1.0
+                for i in range(half_T):
+                    t_val = 0.5 + i * dt2
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_blend, t_tensor, class_labels=y_b)
+                    x_blend = x_blend + velocity * dt2
+                # Loss is MSE of the refined prediction
+                return F.mse_loss(x_blend, x_b).item()
             elif loss_type in ("multi_step", "multi_step_exp"):
                 # Multi-step denoising: sum MSE(x_t, x_clean) at each ODE step
                 # multi_step: uniform weighting
