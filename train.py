@@ -147,6 +147,9 @@ spsa_group.add_argument("--adaptive-perts", action="store_true",
          "gradients when model is random), fewer late (more steps for fine-grained updates).")
 spsa_group.add_argument("--adaptive-perts-min-frac", type=float, default=0.25,
     help="Minimum fraction of n_perts to decay to (default: 0.25 = 1/4)")
+spsa_group.add_argument("--sign-update", action="store_true",
+    help="Use sign of gradient (signSGD) instead of raw gradient. More robust to outlier "
+         "perturbations. Each parameter gets a unit-magnitude update in the estimated direction.")
 spsa_group.add_argument("--augment-fixed", action="store_true",
     help="Apply random horizontal flip to fixed batch each step (adds diversity without new data)")
 spsa_group.add_argument("--forward-fd", action="store_true",
@@ -513,7 +516,7 @@ class SPSATrainer:
                  saturating_alpha, lambda_reg, memory_efficient,
                  accum_steps, weight_decay, layerwise=False,
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
-                 grad_clip=0.0, forward_fd=False, guided_pert=0.0):
+                 grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -532,6 +535,7 @@ class SPSATrainer:
         self.grad_clip = grad_clip
         self.forward_fd = forward_fd
         self.guided_pert = guided_pert
+        self.sign_update = sign_update
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -727,9 +731,12 @@ class SPSATrainer:
                     update.add_(info['param'].data.view(-1).float(), alpha=self.weight_decay)
                 info['param'].data.view(-1).sub_(update, alpha=self.lr)
         else:
-            # Plain SGD
+            # Plain SGD (optionally with sign update)
             for info, grad in zip(self.param_info, self.grads):
-                info['param'].data.view(-1).sub_(grad, alpha=self.lr)
+                if self.sign_update:
+                    info['param'].data.view(-1).sub_(grad.sign(), alpha=self.lr)
+                else:
+                    info['param'].data.view(-1).sub_(grad, alpha=self.lr)
             if self.weight_decay > 0:
                 for info in self.param_info:
                     info['param'].data.mul_(1 - self.lr * self.weight_decay)
@@ -1194,6 +1201,7 @@ else:
         grad_clip=args.spsa_grad_clip,
         forward_fd=args.forward_fd,
         guided_pert=args.guided_pert,
+        sign_update=args.sign_update,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
