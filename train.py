@@ -17,6 +17,7 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 import gc
 import math
 import time
+import random
 import argparse
 from dataclasses import dataclass, asdict
 
@@ -115,8 +116,8 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic"],
-    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max)")
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic", "stochastic", "stochastic_pert"],
+    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation — most diverse gradient signal)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
 spsa_group.add_argument("--t-max", type=int, default=50,
@@ -138,13 +139,31 @@ spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
          "E.g. 0.3 = use MSE for first 30%%, then switch to target loss (enables warm start for perceptual losses)")
 spsa_group.add_argument("--vary-noise", action="store_true",
     help="Vary noise seed each step (prevents overfitting to one noise realization in fixed-batch mode)")
+spsa_group.add_argument("--multi-noise", action="store_true",
+    help="Use different noise seeds per perturbation within each step. Gradient averages over noise "
+         "realizations AND parameter perturbations, reducing overfitting to one noise instance.")
+spsa_group.add_argument("--adaptive-perts", action="store_true",
+    help="Decay n_perts from initial value to 1/4 over training. More perturbations early (reliable "
+         "gradients when model is random), fewer late (more steps for fine-grained updates).")
+spsa_group.add_argument("--adaptive-perts-min-frac", type=float, default=0.25,
+    help="Minimum fraction of n_perts to decay to (default: 0.25 = 1/4)")
+spsa_group.add_argument("--augment-fixed", action="store_true",
+    help="Apply random horizontal flip to fixed batch each step (adds diversity without new data)")
+spsa_group.add_argument("--forward-fd", action="store_true",
+    help="Use forward-difference SPSA instead of central-difference (1 eval per pert instead of 2, ~2x faster)")
 spsa_group.add_argument("--eps-schedule", type=str, default="fixed",
     choices=["fixed", "cosine_decay", "linear_decay"],
     help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), linear_decay (eps-max -> epsilon linearly)")
 spsa_group.add_argument("--eps-max", type=float, default=None,
     help="Starting epsilon for decay schedules (decays to --epsilon). Default: 10x epsilon")
+spsa_group.add_argument("--spsa-grad-clip", type=float, default=0.0,
+    help="Clip SPSA gradient coefficient magnitude per perturbation (0 = disabled). "
+         "Prevents divergence from outlier perturbations, enabling higher lr.")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
+spsa_group.add_argument("--guided-pert", type=float, default=0.0,
+    help="Fraction of perturbation from gradient EMA sign (0=pure random, 0.5=half guided). "
+         "Biases perturbations toward known-good directions while maintaining exploration.")
 spsa_group.add_argument("--no-zero-init", action="store_true",
     help="Skip zero initialization of final layers (better for SPSA gradient signal)")
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
@@ -154,6 +173,8 @@ spsa_group.add_argument("--fixed-batch-size", type=int, default=0,
 spsa_group.add_argument("--fixed-batch-mode", type=str, default="cycle",
     choices=["cycle", "all"],
     help="cycle: train on 1 image at a time; all: train on all fixed images every step")
+spsa_group.add_argument("--batch-refresh-pct", type=float, default=0.0,
+    help="If > 0, refresh fixed batch every this fraction of training (e.g., 0.1 = every 10%%)")
 spsa_group.add_argument("--spsa-adam", action="store_true",
     help="Use Adam optimizer for SPSA gradient updates (momentum + adaptive LR)")
 spsa_group.add_argument("--spsa-adam-beta1", type=float, default=0.9,
@@ -491,7 +512,8 @@ class SPSATrainer:
     def __init__(self, model, lr, epsilon, n_perts, use_curvature,
                  saturating_alpha, lambda_reg, memory_efficient,
                  accum_steps, weight_decay, layerwise=False,
-                 use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8):
+                 use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
+                 grad_clip=0.0, forward_fd=False, guided_pert=0.0):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -507,6 +529,9 @@ class SPSATrainer:
         self.adam_beta2 = adam_beta2
         self.adam_eps = adam_eps
         self.adam_step = 0
+        self.grad_clip = grad_clip
+        self.forward_fd = forward_fd
+        self.guided_pert = guided_pert
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -561,15 +586,25 @@ class SPSATrainer:
             self.m = None
             self.v = None
 
+        # Guided perturbations: maintain gradient EMA sign for biasing perturbation directions
+        if guided_pert > 0 and not memory_efficient:
+            # Store sign of EMA gradient as packed bits (same format as perturbations)
+            self.grad_ema_packed = torch.zeros(self.packed_size, device='cuda', dtype=torch.uint8)
+            self.grad_ema_initialized = False
+        else:
+            self.grad_ema_packed = None
+
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
         curv_str = " [1.5-SPSA]" if use_curvature else ""
         adam_str = " [ADAM]" if use_adam else ""
+        guided_str = f" [GUIDED {guided_pert:.0%}]" if guided_pert > 0 else ""
         print(f"SPSATrainer: {self.total/1e6:.2f}M params, packed={self.packed_size/1e6:.1f}MB"
-              f"{curv_str}{mode_str}{accum_str}{adam_str}")
+              f"{curv_str}{mode_str}{accum_str}{adam_str}{guided_str}")
 
-    def step(self, loss_fn, iteration):
-        """Perform one SPSA step. loss_fn(batch_idx) -> float."""
+    def step(self, loss_fn, iteration, per_pert_hook=None):
+        """Perform one SPSA step. loss_fn(batch_idx) -> float.
+        per_pert_hook(pert_idx, iteration): optional callback before each perturbation pair."""
         if self.layerwise:
             return self._step_layerwise(loss_fn, iteration)
         if self.memory_efficient:
@@ -580,17 +615,32 @@ class SPSATrainer:
 
         total_loss = 0.0
 
-        # For 1.5-SPSA, get clean loss once per iteration
-        if self.use_curvature:
+        # For forward-FD or 1.5-SPSA, get clean loss once per iteration
+        if self.use_curvature or self.forward_fd:
             loss_clean = 0.0
             for batch_idx in range(self.accum_steps):
                 loss_clean += loss_fn(batch_idx)
             loss_clean /= self.accum_steps
 
         for pert_idx in range(self.n_perts):
+            # Per-perturbation hook (e.g., set T for this perturbation)
+            if per_pert_hook is not None:
+                per_pert_hook(pert_idx, iteration)
+
             # Generate bit-packed Rademacher random (8x less memory than full float)
             torch.manual_seed(iteration * 10000 + pert_idx)
             packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+
+            # Guided perturbations: bias toward gradient EMA sign direction
+            if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
+                # Generate per-byte guidance mask: each bit independently uses EMA with prob guided_pert
+                # Efficient approach: use threshold on random bytes
+                guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                threshold = int(self.guided_pert * 256)
+                # For each bit position, if the corresponding random value < threshold, use EMA
+                # Simple approximation: if random byte < threshold*256/256, replace entire byte
+                guide_mask = (guide_rand < threshold)
+                packed = torch.where(guide_mask, self.grad_ema_packed, packed)
 
             # Apply +epsilon perturbation
             for info in self.param_info:
@@ -604,32 +654,47 @@ class SPSATrainer:
                 loss_plus += loss_fn(batch_idx)
             loss_plus /= self.accum_steps
 
-            # Apply -2*epsilon (net: -epsilon from original)
-            for info in self.param_info:
-                flat = info['param'].data.view(-1)
-                _unpack_and_apply[info['grid']](
-                    flat, packed[info['packed_offset']:],
-                    info['numel'], -2 * self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
-
-            loss_minus = 0.0
-            for batch_idx in range(self.accum_steps):
-                loss_minus += loss_fn(batch_idx)
-            loss_minus /= self.accum_steps
-
-            # Restore to original (+epsilon to undo the -2*epsilon)
-            for info in self.param_info:
-                flat = info['param'].data.view(-1)
-                _unpack_and_apply[info['grid']](
-                    flat, packed[info['packed_offset']:],
-                    info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
-
-            # Compute gradient coefficient
-            if self.use_curvature:
-                curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
-                curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
-                grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+            if self.forward_fd:
+                # Forward-difference: use (L+ - L0) / epsilon
+                # Only need to undo +epsilon (not -2*epsilon)
+                for info in self.param_info:
+                    flat = info['param'].data.view(-1)
+                    _unpack_and_apply[info['grid']](
+                        flat, packed[info['packed_offset']:],
+                        info['numel'], -self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                grad_coeff = (loss_plus - loss_clean) / (self.epsilon * self.n_perts)
             else:
-                grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
+                # Central difference: use (L+ - L-) / (2*epsilon)
+                # Apply -2*epsilon (net: -epsilon from original)
+                for info in self.param_info:
+                    flat = info['param'].data.view(-1)
+                    _unpack_and_apply[info['grid']](
+                        flat, packed[info['packed_offset']:],
+                        info['numel'], -2 * self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+                loss_minus = 0.0
+                for batch_idx in range(self.accum_steps):
+                    loss_minus += loss_fn(batch_idx)
+                loss_minus /= self.accum_steps
+
+                # Restore to original (+epsilon to undo the -2*epsilon)
+                for info in self.param_info:
+                    flat = info['param'].data.view(-1)
+                    _unpack_and_apply[info['grid']](
+                        flat, packed[info['packed_offset']:],
+                        info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+                # Compute gradient coefficient
+                if self.use_curvature:
+                    curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
+                    curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
+                    grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+                else:
+                    grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
+
+            # Clip gradient coefficient to prevent outlier perturbations from diverging
+            if self.grad_clip > 0:
+                grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
             # Accumulate gradient
             for i, info in enumerate(self.param_info):
@@ -637,7 +702,10 @@ class SPSATrainer:
                     self.grads[i], packed[info['packed_offset']:],
                     info['numel'], grad_coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
 
-            total_loss += (loss_plus + loss_minus) / 2
+            if self.forward_fd:
+                total_loss += loss_plus
+            else:
+                total_loss += (loss_plus + loss_minus) / 2
             del packed
 
         # Apply update
@@ -665,6 +733,24 @@ class SPSATrainer:
             if self.weight_decay > 0:
                 for info in self.param_info:
                     info['param'].data.mul_(1 - self.lr * self.weight_decay)
+
+        # Update gradient EMA packed bits for guided perturbations
+        if self.guided_pert > 0 and self.grad_ema_packed is not None:
+            # Use Adam momentum (m) if available, else raw gradient
+            grad_source = self.m if (self.use_adam and self.m is not None) else self.grads
+            if grad_source is not None:
+                # Pack sign of gradient EMA into bytes
+                all_signs = []
+                for g in grad_source:
+                    all_signs.append((g >= 0).to(torch.uint8))
+                sign_bits = torch.cat(all_signs)
+                # Pad to multiple of 8
+                n_full = (len(sign_bits) // 8) * 8
+                if n_full > 0:
+                    sign_bytes = sign_bits[:n_full].view(-1, 8)
+                    powers = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device='cuda', dtype=torch.uint8)
+                    self.grad_ema_packed[:n_full // 8] = (sign_bytes * powers).sum(dim=1).to(torch.uint8)
+                self.grad_ema_initialized = True
 
         return total_loss / self.n_perts
 
@@ -1105,6 +1191,9 @@ else:
         layerwise=args.layerwise_spsa,
         use_adam=args.spsa_adam, adam_beta1=args.spsa_adam_beta1,
         adam_beta2=args.spsa_adam_beta2,
+        grad_clip=args.spsa_grad_clip,
+        forward_fd=args.forward_fd,
+        guided_pert=args.guided_pert,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
@@ -1905,6 +1994,12 @@ while True:
             if args.fixed_batch_mode == "all" and fixed_all_batch is not None:
                 # Use all fixed images every step
                 x_b, y_b = fixed_all_batch
+                if args.augment_fixed:
+                    # Random horizontal flip (deterministic per step for ±epsilon consistency)
+                    aug_rng = torch.Generator(device=x_b.device)
+                    aug_rng.manual_seed(step * 9999 + 13)
+                    flip_mask = torch.rand(x_b.shape[0], 1, 1, 1, device=x_b.device, generator=aug_rng) > 0.5
+                    x_b = torch.where(flip_mask, x_b.flip(-1), x_b)
                 spsa_batches.append((x_b, y_b))
                 noise_seed[0] = (42 + step) if args.vary_noise else 42
             else:
@@ -1966,9 +2061,57 @@ while True:
             progress = min(total_training_time / args.time_budget, 1.0)
             cycle = int(progress * 10) % 2
             current_T[0] = args.t_min if cycle == 0 else args.t_max
+        elif args.t_schedule == "stochastic":
+            # Stochastic T: sample uniformly from [t_min, current_max_T]
+            # current_max_T grows linearly like the linear schedule
+            # Different T per step gives gradient diversity across diffusion depths
+            progress = min(total_training_time / args.time_budget, 1.0)
+            max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * progress))
+            _t_rng = random.Random(step * 31337 + 7)
+            current_T[0] = _t_rng.randint(args.t_min, max(args.t_min, max_T))
 
-        # SPSA step
-        train_loss_f = trainer.step(spsa_loss_fn, step)
+        # Batch refresh: periodically load new random images
+        if args.batch_refresh_pct > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            refresh_interval = args.batch_refresh_pct
+            current_bucket = int(progress_now / refresh_interval) if refresh_interval > 0 else 0
+            if not hasattr(args, '_last_refresh_bucket'):
+                args._last_refresh_bucket = 0
+            if current_bucket > args._last_refresh_bucket and progress_now > 0.01:
+                args._last_refresh_bucket = current_bucket
+                fixed_buffer.clear()
+                for i in range(args.fixed_batch_size):
+                    x_b, y_b, _ = next(train_loader)
+                    fixed_buffer.append((x_b[:1], y_b[:1]))
+                if args.fixed_batch_mode == "all":
+                    fixed_all_batch = (
+                        torch.cat([fb[0] for fb in fixed_buffer], dim=0),
+                        torch.cat([fb[1] for fb in fixed_buffer], dim=0),
+                    )
+                print(f"  [Batch refresh at {progress_now:.1%}] Loaded {args.fixed_batch_size} new images")
+
+        # Adaptive perturbation count: decay n_perts over training
+        if args.adaptive_perts:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            min_perts = max(1, int(args.n_perts * args.adaptive_perts_min_frac))
+            trainer.n_perts = max(min_perts, int(args.n_perts * (1 - (1 - args.adaptive_perts_min_frac) * progress_now)))
+
+        # SPSA step — with optional per-perturbation hooks (T variation, noise variation)
+        _pert_hook = None
+        _needs_hook = (args.t_schedule == "stochastic_pert") or args.multi_noise
+        if _needs_hook:
+            _stoch_progress = min(total_training_time / args.time_budget, 1.0)
+            _stoch_max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * _stoch_progress))
+            def _pert_hook(pert_idx, iteration):
+                if args.t_schedule == "stochastic_pert":
+                    # Each perturbation gets a different T sampled from expanding range
+                    _rng = random.Random(iteration * 10000 + pert_idx * 777 + 42)
+                    current_T[0] = _rng.randint(args.t_min, max(args.t_min, _stoch_max_T))
+                if args.multi_noise:
+                    # Each perturbation uses a different noise seed for ODE denoising
+                    # ±epsilon evaluations still share the same noise (deterministic via pert_idx)
+                    noise_seed[0] = iteration * 100 + pert_idx * 7 + 42
+        train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
 
         # Update LR based on schedule (when not using search)
         progress = min(total_training_time / args.time_budget, 1.0)
