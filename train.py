@@ -116,8 +116,8 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic", "stochastic", "stochastic_pert"],
-    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation — most diverse gradient signal)")
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased"],
+    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
 spsa_group.add_argument("--t-max", type=int, default=50,
@@ -2069,6 +2069,13 @@ while True:
             max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * progress))
             _t_rng = random.Random(step * 31337 + 7)
             current_T[0] = _t_rng.randint(args.t_min, max(args.t_min, max_T))
+        elif args.t_schedule == "phased":
+            # Phased T: divide training into equal phases, one T per phase
+            # LR restarts at each phase boundary for fresh momentum
+            progress = min(total_training_time / args.time_budget, 1.0)
+            n_phases = args.t_max - args.t_min + 1  # e.g., T=1→4 = 4 phases
+            phase = min(int(progress * n_phases), n_phases - 1)
+            current_T[0] = args.t_min + phase
 
         # Batch refresh: periodically load new random images
         if args.batch_refresh_pct > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:
@@ -2116,7 +2123,13 @@ while True:
         # Update LR based on schedule (when not using search)
         progress = min(total_training_time / args.time_budget, 1.0)
         if args.search_strategy == "none":
-            lrm = get_lr_multiplier(progress)
+            if args.t_schedule == "phased":
+                # Phased T: restart LR at each phase boundary with independent warmup/warmdown
+                n_phases = args.t_max - args.t_min + 1
+                phase_progress = (progress * n_phases) % 1.0  # 0→1 within each phase
+                lrm = get_lr_multiplier(phase_progress)  # independent schedule per phase
+            else:
+                lrm = get_lr_multiplier(progress)
             trainer.lr = args.lr * lrm
             if args.epsilon is None:
                 trainer.epsilon = max(trainer.lr, 1e-8)
