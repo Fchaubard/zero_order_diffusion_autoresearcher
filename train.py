@@ -130,13 +130,19 @@ spsa_group.add_argument("--curriculum-frac", type=float, default=0.6,
 spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
              "ssim", "fft", "multiscale", "ssim_mse", "direct_fid",
-             "multi_step", "multi_step_exp"],
+             "multi_step", "multi_step_exp",
+             "loss_ensemble", "ssim_mse_fft"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
          "E.g. 0.3 = use MSE for first 30%%, then switch to target loss (enables warm start for perceptual losses)")
 spsa_group.add_argument("--vary-noise", action="store_true",
     help="Vary noise seed each step (prevents overfitting to one noise realization in fixed-batch mode)")
+spsa_group.add_argument("--eps-schedule", type=str, default="fixed",
+    choices=["fixed", "cosine_decay", "linear_decay"],
+    help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), linear_decay (eps-max -> epsilon linearly)")
+spsa_group.add_argument("--eps-max", type=float, default=None,
+    help="Starting epsilon for decay schedules (decays to --epsilon). Default: 10x epsilon")
 spsa_group.add_argument("--spsa-weight-decay", type=float, default=0.0,
     help="Weight decay for SPSA parameter updates")
 spsa_group.add_argument("--no-zero-init", action="store_true",
@@ -1646,6 +1652,70 @@ if args.solver == "spsa":
                 y_quarter = F.avg_pool2d(y_f, 4)
                 total_loss += F.mse_loss(x_quarter, y_quarter).item()
                 return total_loss / 3.0
+            elif loss_type == "ssim_mse_fft":
+                # Triple combo: MSE + SSIM + FFT spectral loss
+                # Pixel accuracy + perceptual quality + frequency fidelity
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                # MSE
+                mse = F.mse_loss(x_f, y_f).item()
+                # SSIM
+                C1, C2 = 0.01**2, 0.03**2
+                ks, pad = 11, 5
+                mu_x = F.avg_pool2d(x_f, ks, stride=1, padding=pad)
+                mu_y = F.avg_pool2d(y_f, ks, stride=1, padding=pad)
+                sigma_x2 = F.avg_pool2d(x_f**2, ks, stride=1, padding=pad) - mu_x**2
+                sigma_y2 = F.avg_pool2d(y_f**2, ks, stride=1, padding=pad) - mu_y**2
+                sigma_xy = F.avg_pool2d(x_f*y_f, ks, stride=1, padding=pad) - mu_x*mu_y
+                ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
+                ssim_loss = (1 - ssim.mean()).item()
+                # FFT spectral
+                fft_gen = torch.fft.fft2(x_f)
+                fft_real = torch.fft.fft2(y_f)
+                fft_loss = F.mse_loss(torch.log1p(torch.abs(fft_gen)), torch.log1p(torch.abs(fft_real))).item()
+                return mse + ssim_loss + 0.1 * fft_loss  # FFT scaled down (different magnitude)
+            elif loss_type == "loss_ensemble":
+                # Weighted ensemble of MSE + SSIM + multiscale MSE
+                # Combines pixel, perceptual, and structural at multiple scales
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                # Full-res MSE
+                mse = F.mse_loss(x_f, y_f).item()
+                # Half-res MSE (captures global structure)
+                mse_half = F.mse_loss(F.avg_pool2d(x_f, 2), F.avg_pool2d(y_f, 2)).item()
+                # SSIM
+                C1, C2 = 0.01**2, 0.03**2
+                ks, pad = 11, 5
+                mu_x = F.avg_pool2d(x_f, ks, stride=1, padding=pad)
+                mu_y = F.avg_pool2d(y_f, ks, stride=1, padding=pad)
+                sigma_x2 = F.avg_pool2d(x_f**2, ks, stride=1, padding=pad) - mu_x**2
+                sigma_y2 = F.avg_pool2d(y_f**2, ks, stride=1, padding=pad) - mu_y**2
+                sigma_xy = F.avg_pool2d(x_f*y_f, ks, stride=1, padding=pad) - mu_x*mu_y
+                ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
+                ssim_loss = (1 - ssim.mean()).item()
+                return mse + 0.5 * mse_half + ssim_loss
             elif loss_type == "direct_fid":
                 # DIRECT FID as training loss — THE unique zero-order advantage!
                 # Backprop CANNOT optimize this: it requires differentiating through
@@ -1873,6 +1943,15 @@ while True:
             trainer.lr = args.lr * lrm
             if args.epsilon is None:
                 trainer.epsilon = max(trainer.lr, 1e-8)
+            elif args.eps_schedule != "fixed" and args.epsilon is not None:
+                # Adaptive epsilon: decay from eps_max to epsilon over training
+                eps_hi = args.eps_max if args.eps_max is not None else args.epsilon * 10
+                eps_lo = args.epsilon
+                if args.eps_schedule == "cosine_decay":
+                    eps_mult = 0.5 * (1.0 + math.cos(math.pi * progress))
+                    trainer.epsilon = eps_lo + (eps_hi - eps_lo) * eps_mult
+                elif args.eps_schedule == "linear_decay":
+                    trainer.epsilon = eps_hi + (eps_lo - eps_hi) * progress
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
 
