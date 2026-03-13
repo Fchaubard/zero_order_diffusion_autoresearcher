@@ -131,7 +131,7 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
     choices=["teacher", "denoising", "trajectory", "progressive", "inception", "minifid", "traj_div", "contrastive", "cosine", "huber", "combo", "rank", "mmd", "mmd_inception",
              "ssim", "fft", "multiscale", "ssim_mse", "direct_fid",
              "multi_step", "multi_step_exp",
-             "loss_ensemble", "ssim_mse_fft"],
+             "loss_ensemble", "ssim_mse_fft", "hist_match"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -1716,6 +1716,40 @@ if args.solver == "spsa":
                 ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
                 ssim_loss = (1 - ssim.mean()).item()
                 return mse + 0.5 * mse_half + ssim_loss
+            elif loss_type == "hist_match":
+                # Histogram matching loss: match pixel intensity distributions
+                # IMPOSSIBLE with backprop — histogram binning is non-differentiable!
+                # This captures color/brightness distribution matching
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                # MSE component (pixel accuracy)
+                mse = F.mse_loss(x_f, y_f).item()
+                # Histogram distance per channel (32 bins from -1 to 1)
+                n_bins = 32
+                hist_loss = 0.0
+                for c in range(3):
+                    gen_vals = x_f[:, c].reshape(-1)
+                    ref_vals = y_f[:, c].reshape(-1)
+                    gen_hist = torch.histc(gen_vals, bins=n_bins, min=-1.0, max=1.0)
+                    ref_hist = torch.histc(ref_vals, bins=n_bins, min=-1.0, max=1.0)
+                    # Normalize to probability distributions
+                    gen_hist = gen_hist / (gen_hist.sum() + 1e-8)
+                    ref_hist = ref_hist / (ref_hist.sum() + 1e-8)
+                    # Earth mover's distance approximation via cumulative difference
+                    hist_loss += torch.abs(gen_hist.cumsum(0) - ref_hist.cumsum(0)).sum().item()
+                hist_loss /= 3.0
+                return mse + 0.1 * hist_loss  # Scale histogram loss
             elif loss_type == "direct_fid":
                 # DIRECT FID as training loss — THE unique zero-order advantage!
                 # Backprop CANNOT optimize this: it requires differentiating through
