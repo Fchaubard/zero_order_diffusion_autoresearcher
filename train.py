@@ -55,6 +55,15 @@ model_group.add_argument("--patch-size", type=int, default=4,
     help="Patch size for patch embedding")
 model_group.add_argument("--head-dim", type=int, default=64,
     help="Target head dimension for attention")
+model_group.add_argument("--repeat-blocks", type=int, default=1,
+    help="Number of times to loop through transformer blocks (weight sharing). "
+         "Effective depth = depth × repeat_blocks. Same params, more compute, deeper model.")
+model_group.add_argument("--attn-type", type=str, default="softmax",
+    choices=["softmax", "linear", "none"],
+    help="Attention type. softmax=standard, linear=no softmax (SPSA-friendly), "
+         "none=skip attention entirely (MLP-only, use token mixing)")
+model_group.add_argument("--mlp-ratio", type=int, default=4,
+    help="MLP hidden dim ratio (hidden = n_embd * mlp_ratio)")
 
 # Training (common)
 train_group = parser.add_argument_group("training")
@@ -135,7 +144,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "loss_ensemble", "ssim_mse_fft", "hist_match",
              "denoising_midpoint", "denoising_rk4", "denoising_logmse",
              "denoising_multiscale", "denoising_heun", "denoising_cosine_steps",
-             "denoising_warm_restart"],
+             "denoising_warm_restart", "denoising_selfdistill",
+             "ssim_mse_light", "mse_clamp2"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -236,6 +246,9 @@ class DiTConfig:
     n_head: int = 12
     n_layer: int = 1
     num_classes: int = 1000
+    repeat_blocks: int = 1
+    attn_type: str = "softmax"
+    mlp_ratio: int = 4
 
 
 def norm(x):
@@ -298,8 +311,10 @@ class DiTBlock(nn.Module):
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
         # MLP
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_fc_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        mlp_hidden = config.mlp_ratio * config.n_embd
+        self.c_fc = nn.Linear(config.n_embd, mlp_hidden, bias=False)
+        self.c_fc_proj = nn.Linear(mlp_hidden, config.n_embd, bias=False)
+        self.attn_type = config.attn_type
 
         # AdaLN modulation: 6 params per dim (gamma1, beta1, alpha1, gamma2, beta2, alpha2)
         self.adaLN_modulation = nn.Sequential(
@@ -315,12 +330,23 @@ class DiTBlock(nn.Module):
         # Self-attention with AdaLN
         B, N, C = x.shape
         h = norm(x) * (1 + scale_msa.unsqueeze(1)) + shift_msa.unsqueeze(1)
-        q = self.c_q(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
-        k = self.c_k(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
-        v = self.c_v(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
-        h = F.scaled_dot_product_attention(q, k, v)
-        h = h.transpose(1, 2).reshape(B, N, C)
-        h = self.c_proj(h)
+        if self.attn_type == "none":
+            # Skip attention, just use linear projection as token mixing
+            h = self.c_proj(self.c_v(h))
+        else:
+            q = self.c_q(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
+            k = self.c_k(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
+            v = self.c_v(h).view(B, N, self.n_head, self.head_dim).transpose(1, 2)
+            if self.attn_type == "linear":
+                # Linear attention: no softmax, direct QK^TV
+                # More SPSA-friendly: perturbations have linear effect on output
+                scale = 1.0 / (N * self.head_dim ** 0.5)
+                attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+                h = torch.matmul(attn, v)
+            else:
+                h = F.scaled_dot_product_attention(q, k, v)
+            h = h.transpose(1, 2).reshape(B, N, C)
+            h = self.c_proj(h)
         x = x + gate_msa.unsqueeze(1) * h
 
         # MLP with AdaLN
@@ -465,9 +491,10 @@ class DiT(nn.Module):
         if class_labels is not None:
             c = c + self.label_embed(class_labels)
 
-        # Transformer blocks
-        for block in self.blocks:
-            x = block(x, c)
+        # Transformer blocks (optionally repeated for weight-shared depth)
+        for _ in range(self.config.repeat_blocks):
+            for block in self.blocks:
+                x = block(x, c)
 
         # Output projection with AdaLN
         shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
@@ -1198,6 +1225,9 @@ num_heads = args.n_embd // args.head_dim
 config = DiTConfig(
     img_size=IMG_SIZE, patch_size=args.patch_size, in_channels=IMG_CHANNELS,
     n_embd=args.n_embd, n_head=num_heads, n_layer=args.depth, num_classes=NUM_CLASSES,
+    repeat_blocks=args.repeat_blocks,
+    attn_type=args.attn_type,
+    mlp_ratio=args.mlp_ratio,
 )
 print(f"Solver: {args.solver}")
 print(f"Model config: {asdict(config)}")
@@ -1325,6 +1355,9 @@ if args.solver == "spsa":
 
     # Track which loss type is active (for logging during warmup phase)
     active_loss_type = [args.spsa_loss_type]
+
+    # Self-distillation targets: computed once per step at unperturbed model
+    selfdistill_targets = [None]  # Will hold target images from T=20 generation
 
     def spsa_loss_fn(batch_idx=0):
         """SPSA training loss with multiple loss type options."""
@@ -1514,6 +1547,30 @@ if args.solver == "spsa":
                     x_blend = x_blend + velocity * dt2
                 # Loss is MSE of the refined prediction
                 return F.mse_loss(x_blend, x_b).item()
+            elif loss_type == "denoising_selfdistill":
+                # Self-distillation: combine standard denoising loss with a
+                # consistency loss that teaches the model to reproduce its own
+                # high-T generation at lower T. Targets computed ONCE at unperturbed
+                # model before perturbations, so they're deterministic for ±eps.
+                # Standard denoising component
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                mse_real = F.mse_loss(x, x_b).item()
+                # Self-distillation component (if targets available)
+                if selfdistill_targets[0] is not None:
+                    mse_distill = F.mse_loss(x, selfdistill_targets[0]).item()
+                    # Blend: 70% real target, 30% self-distillation
+                    return 0.7 * mse_real + 0.3 * mse_distill
+                return mse_real
             elif loss_type in ("multi_step", "multi_step_exp"):
                 # Multi-step denoising: sum MSE(x_t, x_clean) at each ODE step
                 # multi_step: uniform weighting
@@ -1910,6 +1967,64 @@ if args.solver == "spsa":
                 ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
                 ssim_loss = (1 - ssim.mean()).item()
                 return mse + ssim_loss
+            elif loss_type == "ssim_mse_light":
+                # SSIM+MSE with reduced SSIM weight (0.1) to prevent divergence at high T
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse = F.mse_loss(x_f, y_f).item()
+                # SSIM with small weight
+                C1, C2 = 0.01**2, 0.03**2
+                ks, pad = 11, 5
+                mu_x = F.avg_pool2d(x_f, ks, stride=1, padding=pad)
+                mu_y = F.avg_pool2d(y_f, ks, stride=1, padding=pad)
+                sigma_x2 = F.avg_pool2d(x_f**2, ks, stride=1, padding=pad) - mu_x**2
+                sigma_y2 = F.avg_pool2d(y_f**2, ks, stride=1, padding=pad) - mu_y**2
+                sigma_xy = F.avg_pool2d(x_f*y_f, ks, stride=1, padding=pad) - mu_x*mu_y
+                ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
+                ssim_loss = (1 - ssim.mean()).item()
+                return mse + 0.1 * ssim_loss
+            elif loss_type == "mse_clamp2":
+                # Progressive SSIM: pure MSE first 30%, then gradually blend SSIM in
+                # This avoids SSIM instability early when model is rough
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse = F.mse_loss(x_f, y_f).item()
+                # Blend in SSIM after 30% of training (progress available via T ramp)
+                ssim_weight = max(0.0, min(0.2, (T - 2) * 0.1))  # 0 when T<=2, ramps to 0.2 at T=4
+                if ssim_weight > 0:
+                    C1, C2 = 0.01**2, 0.03**2
+                    ks, pad = 11, 5
+                    mu_x = F.avg_pool2d(x_f, ks, stride=1, padding=pad)
+                    mu_y = F.avg_pool2d(y_f, ks, stride=1, padding=pad)
+                    sigma_x2 = F.avg_pool2d(x_f**2, ks, stride=1, padding=pad) - mu_x**2
+                    sigma_y2 = F.avg_pool2d(y_f**2, ks, stride=1, padding=pad) - mu_y**2
+                    sigma_xy = F.avg_pool2d(x_f*y_f, ks, stride=1, padding=pad) - mu_x*mu_y
+                    ssim = ((2*mu_x*mu_y+C1)*(2*sigma_xy+C2)) / ((mu_x**2+mu_y**2+C1)*(sigma_x2+sigma_y2+C2))
+                    ssim_loss = (1 - ssim.mean()).item()
+                    return mse + ssim_weight * ssim_loss
+                return mse
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
@@ -2342,6 +2457,27 @@ while True:
                     # Each perturbation uses a different noise seed for ODE denoising
                     # ±epsilon evaluations still share the same noise (deterministic via pert_idx)
                     noise_seed[0] = iteration * 100 + pert_idx * 7 + 42
+        # Self-distillation: compute high-quality targets at unperturbed model
+        if args.spsa_loss_type == "denoising_selfdistill" and step > 100:
+            with torch.no_grad(), autocast_ctx:
+                x_b_sd, y_b_sd = spsa_batches[0]
+                dev_sd = x_b_sd.device
+                gen_sd = torch.Generator(device=dev_sd)
+                gen_sd.manual_seed(noise_seed[0])
+                noise_sd = torch.randn(x_b_sd.shape, device=dev_sd, dtype=x_b_sd.dtype, generator=gen_sd)
+                x_sd = noise_sd.clone()
+                # Use T=20 for high-quality generation (vs current T=1-4)
+                T_hi = 20
+                dt_sd = 1.0 / T_hi
+                for i_sd in range(T_hi):
+                    t_val_sd = i_sd / T_hi
+                    t_sd = torch.full((x_b_sd.shape[0],), t_val_sd, device=dev_sd)
+                    vel_sd = model(x_sd, t_sd, class_labels=y_b_sd)
+                    x_sd = x_sd + vel_sd * dt_sd
+                selfdistill_targets[0] = x_sd.detach()
+        elif args.spsa_loss_type == "denoising_selfdistill":
+            selfdistill_targets[0] = None  # No targets for first 100 steps
+
         train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
 
         # Update LR based on schedule (when not using search)
