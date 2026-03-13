@@ -184,6 +184,13 @@ spsa_group.add_argument("--spsa-adam-beta1", type=float, default=0.9,
     help="Adam beta1 for SPSA momentum")
 spsa_group.add_argument("--spsa-adam-beta2", type=float, default=0.999,
     help="Adam beta2 for SPSA second moment")
+spsa_group.add_argument("--pert-recycle", type=int, default=1,
+    help="Reuse same perturbation directions for N consecutive steps (common random numbers). "
+         "N=1 is standard (fresh perts each step). N=5 means same 100 directions for 5 steps. "
+         "Reduces gradient variance via temporal averaging while maintaining update frequency.")
+spsa_group.add_argument("--median-clip", type=float, default=0.0,
+    help="Clip SPSA gradient coefficients to ±k*median(|coeff|) across perturbations (0=disabled). "
+         "Adaptive outlier removal: k=3 clips extreme perturbations without tuning absolute threshold.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -516,7 +523,8 @@ class SPSATrainer:
                  saturating_alpha, lambda_reg, memory_efficient,
                  accum_steps, weight_decay, layerwise=False,
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
-                 grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False):
+                 grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
+                 pert_recycle=1, median_clip=0.0):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -535,6 +543,8 @@ class SPSATrainer:
         self.grad_clip = grad_clip
         self.forward_fd = forward_fd
         self.guided_pert = guided_pert
+        self.pert_recycle = pert_recycle
+        self.median_clip = median_clip
         self.sign_update = sign_update
 
         self.params = [p for p in model.parameters() if p.requires_grad]
@@ -632,7 +642,9 @@ class SPSATrainer:
                 per_pert_hook(pert_idx, iteration)
 
             # Generate bit-packed Rademacher random (8x less memory than full float)
-            torch.manual_seed(iteration * 10000 + pert_idx)
+            # With pert_recycle > 1, reuse same perturbation directions across consecutive steps
+            seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
+            torch.manual_seed(seed_iter * 10000 + pert_idx)
             packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
 
             # Guided perturbations: bias toward gradient EMA sign direction
@@ -700,17 +712,48 @@ class SPSATrainer:
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            # Accumulate gradient
-            for i, info in enumerate(self.param_info):
-                _unpack_and_accumulate[info['grid']](
-                    self.grads[i], packed[info['packed_offset']:],
-                    info['numel'], grad_coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+            if self.median_clip > 0:
+                # Deferred accumulation: store coefficients for median clipping later
+                if not hasattr(self, '_deferred_coeffs'):
+                    self._deferred_coeffs = []
+                self._deferred_coeffs.append(grad_coeff)
+            else:
+                # Accumulate gradient immediately
+                for i, info in enumerate(self.param_info):
+                    _unpack_and_accumulate[info['grid']](
+                        self.grads[i], packed[info['packed_offset']:],
+                        info['numel'], grad_coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
 
             if self.forward_fd:
                 total_loss += loss_plus
             else:
                 total_loss += (loss_plus + loss_minus) / 2
             del packed
+
+        # Median-clipped gradient accumulation: replay perturbations with clipped coefficients
+        if self.median_clip > 0 and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
+            coeffs = self._deferred_coeffs
+            abs_coeffs = [abs(c) for c in coeffs]
+            abs_coeffs.sort()
+            median_val = abs_coeffs[len(abs_coeffs) // 2]
+            clip_val = self.median_clip * median_val
+            # Second pass: regenerate perturbations and accumulate with clipped coefficients
+            for pert_idx, coeff in enumerate(coeffs):
+                clipped = max(-clip_val, min(clip_val, coeff))
+                seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
+                torch.manual_seed(seed_iter * 10000 + pert_idx)
+                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
+                    guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                    threshold = int(self.guided_pert * 256)
+                    guide_mask = (guide_rand < threshold)
+                    packed = torch.where(guide_mask, self.grad_ema_packed, packed)
+                for i, info in enumerate(self.param_info):
+                    _unpack_and_accumulate[info['grid']](
+                        self.grads[i], packed[info['packed_offset']:],
+                        info['numel'], clipped, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                del packed
+            self._deferred_coeffs = []
 
         # Apply update
         if self.use_adam and self.m is not None:
@@ -1202,6 +1245,8 @@ else:
         forward_fd=args.forward_fd,
         guided_pert=args.guided_pert,
         sign_update=args.sign_update,
+        pert_recycle=args.pert_recycle,
+        median_clip=args.median_clip,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
