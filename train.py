@@ -243,6 +243,10 @@ spsa_group.add_argument("--lr-layer-scale", action="store_true",
     help="Scale learning rate per layer: deeper layers get smaller LR updates. "
          "Linear decay from 2x (first layer) to 0.5x (last layer). "
          "Matches update magnitude to layer sensitivity in SPSA.")
+spsa_group.add_argument("--grad-verify", action="store_true",
+    help="Verify SPSA gradient before applying: evaluate loss after proposed step, "
+         "revert if loss increased. Prevents bad SPSA updates from noisy gradient estimates. "
+         "Costs 1 extra forward pass per step (~0.5%% overhead).")
 spsa_group.add_argument("--sign-consensus", type=int, default=0,
     help="Only update parameters where gradient sign agrees over last K steps (0=disabled). "
          "Maintains a running sign buffer and masks out parameters with flipping signs. "
@@ -652,6 +656,9 @@ class SPSATrainer:
         self.sign_consensus = 0  # set from args after construction
         self._sign_history = None  # ring buffer of gradient signs
         self.lr_layer_scale = False  # set from args after construction
+        self.grad_verify = False  # set from args after construction
+        self._verify_revert_count = 0
+        self._verify_total_count = 0
         self._loss_ema = None  # EMA of loss for explosion detection
 
         self.params = [p for p in model.parameters() if p.requires_grad]
@@ -989,6 +996,36 @@ class SPSATrainer:
             if self.weight_decay > 0:
                 for info in self.param_info:
                     info['param'].data.mul_(1 - self.lr * self.weight_decay)
+
+        # Gradient verification: check if the update actually reduced loss
+        if self.grad_verify:
+            self._verify_total_count += 1
+            new_loss = loss_fn(0)  # Single forward pass to verify
+            if new_loss > avg_loss * 1.05:  # Loss increased by >5%
+                # Revert the update
+                if self.use_adam and self.m is not None:
+                    for i, info in enumerate(self.param_info):
+                        # Undo: add back what we subtracted
+                        m_hat = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
+                        if self.adam_beta2 > 0:
+                            v_hat = self.v[i] / (1 - self.adam_beta2 ** self.adam_step)
+                            update = m_hat / (v_hat.sqrt() + self.adam_eps)
+                        else:
+                            update = m_hat
+                        lr_i = self.lr * info.get('lr_scale', 1.0) if self.lr_layer_scale else self.lr
+                        info['param'].data.view(-1).add_(update, alpha=lr_i)
+                else:
+                    for info, grad in zip(self.param_info, self.grads):
+                        lr_i = self.lr * info.get('lr_scale', 1.0) if self.lr_layer_scale else self.lr
+                        if self.sign_update:
+                            info['param'].data.view(-1).add_(grad.sign(), alpha=lr_i)
+                        else:
+                            info['param'].data.view(-1).add_(grad, alpha=lr_i)
+                self._verify_revert_count += 1
+                # Log revert rate periodically
+                if self._verify_total_count % 100 == 0:
+                    rate = self._verify_revert_count / self._verify_total_count
+                    print(f"  [grad-verify] Revert rate: {rate:.1%} ({self._verify_revert_count}/{self._verify_total_count})")
 
         # Update gradient EMA packed bits for guided perturbations
         if self.guided_pert > 0 and self.grad_ema_packed is not None:
@@ -1481,6 +1518,9 @@ else:
     if args.sign_consensus > 0:
         trainer.sign_consensus = args.sign_consensus
         print(f"  Sign consensus: only update params with consistent sign over {args.sign_consensus} steps")
+    if args.grad_verify:
+        trainer.grad_verify = True
+        print(f"  Gradient verification: will check loss after each update")
     if args.lr_layer_scale:
         trainer.lr_layer_scale = True
         # Compute per-param LR scale: linearly from 2.0 (first param) to 0.5 (last param)
@@ -1607,6 +1647,25 @@ if args.solver == "spsa":
                 predicted = model(x_t, t, class_labels=y_b)
                 return F.mse_loss(predicted, velocity_target).item()
             elif loss_type == "denoising":
+                # Noise-scale curriculum: start with reduced noise for easier denoising
+                if args.noise_scale_start < 1.0:
+                    _ns_progress = min(total_training_time / args.time_budget, 1.0)
+                    _ns_cf = getattr(args, 'curriculum_frac', 0.67)
+                    # Ramp noise scale from noise_scale_start to 1.0 over curriculum_frac
+                    _ns_scale = args.noise_scale_start + (1.0 - args.noise_scale_start) * min(_ns_progress / _ns_cf, 1.0)
+                    # Inline denoising with scaled noise
+                    dev = x_b.device
+                    gen = torch.Generator(device=dev)
+                    gen.manual_seed(noise_seed[0] + batch_idx)
+                    noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen) * _ns_scale
+                    x = noise.clone()
+                    dt = 1.0 / T
+                    for i in range(T):
+                        t_val = i / T
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity = model(x, t_tensor, class_labels=y_b)
+                        x = x + velocity * dt
+                    return F.mse_loss(x, x_b).item()
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
                     denoising_steps=T,
@@ -2745,10 +2804,28 @@ while True:
         elif args.t_schedule == "curriculum":
             # Curriculum: stay at t_min for curriculum_frac of training, then linear ramp to t_max
             # Optional polish phase: drop back to t_min for final curriculum_polish fraction
+            # Optional double-dip: two full curriculum cycles in one training run
             progress = min(total_training_time / args.time_budget, 1.0)
             cf = args.curriculum_frac
             pf = args.curriculum_polish
-            if pf > 0 and progress >= (1.0 - pf):
+
+            if args.double_dip:
+                # Double-dip: two curriculum cycles, each using half the budget
+                # First cycle: 0-50% of training
+                # Second cycle: 50-100% of training (with warmdown only at end)
+                if progress < 0.5:
+                    # First cycle: rescale progress to 0-1 range
+                    cycle_progress = progress / 0.5
+                else:
+                    # Second cycle: rescale progress to 0-1 range
+                    cycle_progress = (progress - 0.5) / 0.5
+                if cycle_progress < cf:
+                    current_T[0] = args.t_min
+                else:
+                    ramp_progress = (cycle_progress - cf) / (1.0 - cf)
+                    ramp_progress = min(ramp_progress, 1.0)
+                    current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
+            elif pf > 0 and progress >= (1.0 - pf):
                 # Polish phase: back to t_min for final refinement
                 current_T[0] = args.t_min
             elif progress < cf:
@@ -3101,6 +3178,10 @@ while True:
                         trainer.epsilon = eps_lo * scale
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
+
+        # Asymmetric epsilon: scale epsilon when T > 1
+        if args.eps_t_scale != 1.0 and current_T[0] > 1:
+            trainer.epsilon *= args.eps_t_scale
 
         # Adaptive search: plateau/divergence detection
         if args.search_strategy != "none":
