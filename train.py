@@ -125,7 +125,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth"],
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive"],
     help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
@@ -227,6 +227,18 @@ spsa_group.add_argument("--pert-recycle", type=int, default=1,
 spsa_group.add_argument("--median-clip", type=float, default=0.0,
     help="Clip SPSA gradient coefficients to ±k*median(|coeff|) across perturbations (0=disabled). "
          "Adaptive outlier removal: k=3 clips extreme perturbations without tuning absolute threshold.")
+spsa_group.add_argument("--spsa-topk", type=float, default=0.0,
+    help="Fraction of perturbations to use for gradient estimation (0=disabled, 0.5=top 50%%). "
+         "Selects perturbations with largest |loss_diff|, discarding noisy low-signal ones. "
+         "Free variance reduction: no extra forward passes, just better gradient aggregation.")
+spsa_group.add_argument("--curriculum-polish", type=float, default=0.0,
+    help="Fraction of training at end to spend polishing at T=t_min (0=disabled). "
+         "After curriculum reaches t_max, drops T back to t_min for final refinement. "
+         "E.g., 0.05 = last 5%% of training at T=1 for sharpening early denoising steps.")
+spsa_group.add_argument("--elite-perts", type=int, default=0,
+    help="Number of elite perturbation seeds to carry over from previous step (0=disabled). "
+         "Tracks the K best perturbation directions (lowest loss) and reuses them next step, "
+         "filling remaining slots with fresh random perturbations. Exploits promising directions.")
 spsa_group.add_argument("--freeze-pattern", type=str, default="",
     help="Comma-separated patterns of module names to freeze (exclude from SPSA perturbation). "
          "E.g., 'label_embed,time_embed' freezes conditioning layers. "
@@ -582,7 +594,7 @@ class SPSATrainer:
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
                  pert_recycle=1, median_clip=0.0, antithetic=False,
-                 loss_explosion_guard=False):
+                 loss_explosion_guard=False, topk=0.0):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -606,6 +618,9 @@ class SPSATrainer:
         self.sign_update = sign_update
         self.antithetic = antithetic
         self.loss_explosion_guard = loss_explosion_guard
+        self.topk = topk  # fraction of perturbations to keep (0 = all)
+        self.elite_perts = 0  # set from args after construction
+        self._elite_seeds = []  # seeds of best perturbations from last step
         self._loss_ema = None  # EMA of loss for explosion detection
 
         self.params = [p for p in model.parameters() if p.requires_grad]
@@ -697,6 +712,11 @@ class SPSATrainer:
                 loss_clean += loss_fn(batch_idx)
             loss_clean /= self.accum_steps
 
+        # Track per-perturbation loss for elite selection
+        if self.elite_perts > 0:
+            _pert_losses = []  # (loss_avg, seed) pairs for elite tracking
+            self._elite_seeds_snapshot = list(self._elite_seeds)  # snapshot for deferred replay
+
         for pert_idx in range(self.n_perts):
             # Per-perturbation hook (e.g., set T for this perturbation)
             if per_pert_hook is not None:
@@ -705,15 +725,22 @@ class SPSATrainer:
             # Generate bit-packed Rademacher random (8x less memory than full float)
             # With pert_recycle > 1, reuse same perturbation directions across consecutive steps
             seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
-            # Antithetic pairs: first half are random, second half are bitwise complement
-            if self.antithetic and pert_idx >= self.n_perts // 2:
+            # Elite perturbations: reuse best seeds from previous step
+            if self.elite_perts > 0 and pert_idx < len(self._elite_seeds):
+                pert_seed = self._elite_seeds[pert_idx]
+                is_antithetic = False  # elite seeds are always "positive" direction
+            elif self.antithetic and pert_idx >= self.n_perts // 2:
                 base_idx = pert_idx - self.n_perts // 2
-                torch.manual_seed(seed_iter * 10000 + base_idx)
-                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
-                packed = ~packed  # bitwise complement = opposite direction
+                pert_seed = seed_iter * 10000 + base_idx
+                is_antithetic = True
             else:
-                torch.manual_seed(seed_iter * 10000 + pert_idx)
-                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                pert_seed = seed_iter * 10000 + pert_idx
+                is_antithetic = False
+
+            torch.manual_seed(pert_seed)
+            packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+            if is_antithetic:
+                packed = ~packed  # bitwise complement = opposite direction
 
             # Guided perturbations: bias toward gradient EMA sign direction
             if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
@@ -780,8 +807,8 @@ class SPSATrainer:
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            if self.median_clip > 0:
-                # Deferred accumulation: store coefficients for median clipping later
+            if self.median_clip > 0 or self.topk > 0:
+                # Deferred accumulation: store coefficients for median clipping or top-K later
                 if not hasattr(self, '_deferred_coeffs'):
                     self._deferred_coeffs = []
                 self._deferred_coeffs.append(grad_coeff)
@@ -794,23 +821,65 @@ class SPSATrainer:
 
             if self.forward_fd:
                 total_loss += loss_plus
+                pert_avg_loss = loss_plus
             else:
                 total_loss += (loss_plus + loss_minus) / 2
+                pert_avg_loss = (loss_plus + loss_minus) / 2
+
+            # Track per-perturbation loss for elite selection
+            if self.elite_perts > 0:
+                _pert_losses.append((pert_avg_loss, pert_seed))
+
             del packed
 
-        # Median-clipped gradient accumulation: replay perturbations with clipped coefficients
-        if self.median_clip > 0 and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
+        # Update elite seeds: keep the K perturbations with lowest average loss
+        if self.elite_perts > 0 and _pert_losses:
+            _pert_losses.sort(key=lambda x: x[0])
+            self._elite_seeds = [seed for _, seed in _pert_losses[:self.elite_perts]]
+
+        # Deferred gradient accumulation: replay perturbations with processed coefficients
+        if (self.median_clip > 0 or self.topk > 0) and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
             coeffs = self._deferred_coeffs
             abs_coeffs = [abs(c) for c in coeffs]
-            abs_coeffs.sort()
-            median_val = abs_coeffs[len(abs_coeffs) // 2]
-            clip_val = self.median_clip * median_val
-            # Second pass: regenerate perturbations and accumulate with clipped coefficients
+
+            # Apply top-K filtering: zero out perturbations with smallest |loss_diff|
+            if self.topk > 0:
+                k = max(1, int(len(coeffs) * self.topk))
+                abs_sorted = sorted(abs_coeffs, reverse=True)
+                threshold = abs_sorted[min(k, len(abs_sorted)) - 1]
+                # Rescale kept coefficients: multiply by n_perts/k to correct gradient magnitude
+                scale = len(coeffs) / k
+                coeffs = [c * scale if abs(c) >= threshold else 0.0 for c in coeffs]
+
+            # Apply median clipping on top of top-K (if both are set)
+            if self.median_clip > 0:
+                live_abs = sorted([abs(c) for c in coeffs if c != 0.0])
+                if live_abs:
+                    median_val = live_abs[len(live_abs) // 2]
+                    clip_val = self.median_clip * median_val
+                    coeffs = [max(-clip_val, min(clip_val, c)) for c in coeffs]
+
+            # Second pass: regenerate perturbations and accumulate with processed coefficients
             for pert_idx, coeff in enumerate(coeffs):
-                clipped = max(-clip_val, min(clip_val, coeff))
+                if coeff == 0.0:
+                    continue  # Skip zeroed-out perturbations (top-K filtered)
                 seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
-                torch.manual_seed(seed_iter * 10000 + pert_idx)
+                # Reconstruct same seed logic as the forward pass
+                _replay_elite = getattr(self, '_elite_seeds_snapshot', [])
+                if len(_replay_elite) > 0 and pert_idx < len(_replay_elite):
+                    pert_seed = _replay_elite[pert_idx]
+                    is_antithetic = False
+                elif self.antithetic and pert_idx >= self.n_perts // 2:
+                    base_idx = pert_idx - self.n_perts // 2
+                    pert_seed = seed_iter * 10000 + base_idx
+                    is_antithetic = True
+                else:
+                    pert_seed = seed_iter * 10000 + pert_idx
+                    is_antithetic = False
+                torch.manual_seed(pert_seed)
                 packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                if is_antithetic:
+                    packed = ~packed
                 if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
                     guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
                     threshold = int(self.guided_pert * 256)
@@ -819,7 +888,7 @@ class SPSATrainer:
                 for i, info in enumerate(self.param_info):
                     _unpack_and_accumulate[info['grid']](
                         self.grads[i], packed[info['packed_offset']:],
-                        info['numel'], clipped, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                        info['numel'], coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
                 del packed
             self._deferred_coeffs = []
 
@@ -1342,7 +1411,11 @@ else:
         median_clip=args.median_clip,
         antithetic=args.antithetic,
         loss_explosion_guard=args.loss_explosion_guard,
+        topk=args.spsa_topk,
     )
+    if args.elite_perts > 0:
+        trainer.elite_perts = args.elite_perts
+        print(f"  Elite perturbations: {args.elite_perts} seeds carried over each step")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -2583,12 +2656,20 @@ while True:
             current_T[0] = max(1, int(args.t_min * (ratio ** progress)))
         elif args.t_schedule == "curriculum":
             # Curriculum: stay at t_min for curriculum_frac of training, then linear ramp to t_max
+            # Optional polish phase: drop back to t_min for final curriculum_polish fraction
             progress = min(total_training_time / args.time_budget, 1.0)
             cf = args.curriculum_frac
-            if progress < cf:
+            pf = args.curriculum_polish
+            if pf > 0 and progress >= (1.0 - pf):
+                # Polish phase: back to t_min for final refinement
+                current_T[0] = args.t_min
+            elif progress < cf:
                 current_T[0] = args.t_min
             else:
-                ramp_progress = (progress - cf) / (1.0 - cf)
+                # Ramp phase: compress ramp into (cf, 1-pf) range
+                ramp_end = 1.0 - pf if pf > 0 else 1.0
+                ramp_progress = (progress - cf) / (ramp_end - cf)
+                ramp_progress = min(ramp_progress, 1.0)
                 current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
         elif args.t_schedule == "curriculum_exp":
             # Curriculum + exponential ramp: stay at t_min for curriculum_frac,
@@ -2674,6 +2755,38 @@ while True:
                 # Each tooth reaches progressively higher T
                 tooth_max = args.t_min + int((args.t_max - args.t_min) * (tooth + 1) / n_teeth)
                 current_T[0] = max(1, int(args.t_min + (tooth_max - args.t_min) * tooth_progress))
+
+        elif args.t_schedule == "adaptive":
+            # Adaptive T: increase T when loss stabilizes at current T
+            # Uses loss EMA slope to detect convergence, then bumps T
+            progress = min(total_training_time / args.time_budget, 1.0)
+            if not hasattr(args, '_adaptive_T_state'):
+                args._adaptive_T_state = {
+                    'current_T': args.t_min,
+                    'loss_ema': None,
+                    'loss_ema_slow': None,
+                    'steps_at_T': 0,
+                    'min_steps': 500,  # minimum steps at each T before considering increase
+                }
+            st = args._adaptive_T_state
+            st['steps_at_T'] += 1
+            if st['loss_ema'] is None:
+                st['loss_ema'] = train_loss_f
+                st['loss_ema_slow'] = train_loss_f
+            else:
+                st['loss_ema'] = 0.99 * st['loss_ema'] + 0.01 * train_loss_f
+                st['loss_ema_slow'] = 0.999 * st['loss_ema_slow'] + 0.001 * train_loss_f
+            # Increase T if: loss EMA has converged (fast ≈ slow) AND enough steps at this T
+            # AND haven't reached t_max AND still have training time left
+            converged = abs(st['loss_ema'] - st['loss_ema_slow']) < 0.005 * st['loss_ema_slow']
+            if (converged and st['steps_at_T'] > st['min_steps']
+                    and st['current_T'] < args.t_max and progress < 0.95):
+                st['current_T'] = min(st['current_T'] + 1, args.t_max)
+                st['steps_at_T'] = 0
+                st['loss_ema'] = None
+                st['loss_ema_slow'] = None
+                print(f"\n  [Adaptive T] Increasing T to {st['current_T']} at progress {progress:.1%}")
+            current_T[0] = st['current_T']
 
         # Batch refresh: periodically load new random images
         if args.batch_refresh_pct > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:

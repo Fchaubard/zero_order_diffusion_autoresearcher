@@ -181,3 +181,822 @@ f9e9651	311.0526	0.1	discard	SPSA d2/e128/p8 lr=5e-2 eps=1e-2 T=5 fixed=32 cycle
 97e2782	316.4201	0.6	discard	R29 FFT curriculum T=1->10 d2/e128 curvature lr=5e-2 fixed32
 97e2782	314.7382	0.6	discard	R29 SSIM curriculum T=1->10 d2/e128 curvature lr=5e-2 fixed32
 97e2782	0.000000	0.0	crash	R29 direct FID loss T=2 too slow (311s/step)
+97e2782	317.2646	0.6	discard	R29 multiscale loss lognormal T (mu=1.5 s=0.8) d2/e128 curvature lr=5e-2 fixed32
+97e2782	317.2646	0.6	discard	R29 multiscale loss lognormal T curvature d2/e128 lr=5e-2 fixed32 (3hr contention)
+b237a95	313.6261	0.6	discard	R30 denoising T=2 curvature lr=5e-2 fixed32 all (control)
+b237a95	315.0468	0.6	discard	R30 denoising lognormal(mu=1 sigma=0.5) curvature lr=5e-2 fixed32
+b237a95	316.5338	0.6	discard	R30 denoising lognormal(mu=2 sigma=1) curvature lr=5e-2 fixed32
+b237a95	316.7141	0.6	discard	R30 denoising T=2 curvature lr=1e-1 fixed32
+b237a95	317.2990	0.6	discard	R30 denoising linear(2->20) curvature lr=5e-2 fixed32
+b237a95	317.1406	0.6	discard	R30 warmup30 SSIM curvature lr=5e-2 fixed32
+b237a95	315.2330	0.6	discard	R30 warmup30 multiscale curvature lr=5e-2 fixed32
+b237a95	315.9408	0.6	discard	R30 warmup30 multiscale lognormal curvature lr=5e-2 fixed32
+97e2782	315.0468	0.6	discard	R30 MSE denoising lognormal T (mu=1 s=0.5) curvature lr=5e-2 fixed32
+97e2782	316.5338	0.6	discard	R30 MSE denoising lognormal T (mu=2 s=1) curvature lr=5e-2 fixed32
+97e2782	317.1406	0.6	discard	R30 warmup MSE->SSIM 30% curvature lr=5e-2 fixed32
+97e2782	315.2330	0.6	discard	R30 warmup MSE->multiscale 30% curvature lr=5e-2 fixed32
+97e2782	316.7141	0.6	discard	R30 MSE denoising lr=1e-1 curvature fixed32
+97e2782	313.6261	0.6	discard	R30 MSE denoising T=2 curvature lr=5e-2 fixed32 (control)
+97e2782	317.2990	0.6	discard	R30 MSE denoising linear T 2->20 curvature lr=5e-2 fixed32
+97e2782	315.9408	0.6	discard	R30 warmup MSE->multiscale + lognormal T curvature lr=5e-2 fixed32
+97e2782	313.6261	0.6	discard	SPSA d2/e128/p8 MSE T=2 curvature lr=eps=5e-2 fixed=32 all 1h (R30 control - MUCH worse than R26!)
+97e2782	315.0468	0.6	discard	SPSA d2/e128/p8 MSE lognormal(1,0.5) curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	316.5338	0.6	discard	SPSA d2/e128/p8 MSE lognormal(2,1) curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	316.7141	0.6	discard	SPSA d2/e128/p8 MSE T=2 curvature lr=eps=1e-1 fixed=32 all 1h (R30)
+97e2782	317.2990	0.6	discard	SPSA d2/e128/p8 MSE linear 2→20 curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	317.1406	0.6	discard	SPSA d2/e128/p8 warmup30%→SSIM curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	315.2330	0.6	discard	SPSA d2/e128/p8 warmup30%→multiscale curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	315.9408	0.6	discard	SPSA d2/e128/p8 warmup30%→multiscale+lognormal curvature lr=eps=5e-2 fixed=32 all 1h (R30)
+97e2782	278.3584	0.6	discard	R31 MSE denoising no curvature lr=5e-2 eps=1e-2 fixed32 (control)
+97e2782	293.4496	0.6	discard	R31 MSE denoising WITH curvature lr=5e-2 eps=1e-2 fixed32
+97e2782	313.7050	0.6	discard	R31 MSE denoising curvature tied lr=eps=5e-2 fixed32 (worst)
+97e2782	242.0410	0.6	discard	R31 MSE lognormal T (mu=1 s=0.5) no curvature lr=5e-2 eps=1e-2 fixed32
+97e2782	251.4463	0.6	discard	R31 MSE lr=1e-1 eps=1e-2 no curvature fixed32
+97e2782	285.3327	0.6	discard	R31 MSE lr=5e-2 eps=5e-3 no curvature fixed32
+97e2782	227.0251	0.6	keep	R31 SSIM+MSE no curvature lr=5e-2 eps=1e-2 fixed32 (NEW BEST SPSA!)
+97e2782	250.9215	0.6	discard	R31 warmup MSE->multiscale no curvature lr=5e-2 eps=1e-2 fixed32
+97e2782	253.3235	0.6	discard	SPSA d2/e128/p8 R26 control lr=5e-2 eps=1e-2 T=2 fixed=32 all 1h (R31, GPU contention)
+97e2782	242.4574	0.6	keep	SPSA d2/e128/p8 lognormal(1,0.5) lr=5e-2 eps=1e-2 fixed=32 all 1h (R31)
+97e2782	210.9856	0.6	keep	SPSA d2/e128/p8 linear T=1→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R31 NEW BEST SPSA!)
+97e2782	299.0853	0.6	discard	SPSA d2/e128/p8 linear T=2→10 lr=5e-2 eps=1e-2 fixed=32 all 1h (R31, T too high)
+97e2782	258.6049	0.6	discard	SPSA d2/e128/p8 warmup30%→multiscale lr=5e-2 eps=1e-2 fixed=32 all 1h (R31)
+97e2782	225.9250	0.6	keep	SPSA d2/e128/p8 warmup30%→SSIM+MSE lr=5e-2 eps=1e-2 fixed=32 all 1h (R31)
+97e2782	264.2437	0.6	discard	SPSA d2/e128/p8 T=1 lr=5e-2 eps=1e-2 fixed=32 all 1h (R31, doesn't generalize)
+97e2782	276.0149	0.6	discard	SPSA d2/e128/p8 T=2 lr=1e-1 eps=1e-2 fixed=32 all 1h (R31, LR too high)
+97e2782	213.1582	0.6	keep	SPSA d2/e128/p8 linear T=1→3 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b, tight range)
+97e2782	215.0349	0.6	keep	SPSA d2/e128/p8 linear T=1→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b repro, contention)
+97e2782	220.7120	0.6	keep	SPSA d2/e128/p8 warmup30→SSIM+MSE linear T=1→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b)
+97e2782	243.4562	0.6	discard	SPSA d2/e128/p8 lognormal(0.5,0.5) lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b)
+97e2782	257.5064	0.6	discard	SPSA d2/e128/p8 linear T=2→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b, T=1 start critical)
+97e2782	261.8787	0.6	discard	SPSA d2/e128/p8 linear T=1→7 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b, too wide)
+97e2782	264.3427	0.6	discard	SPSA d2/e128/p8 warmup30→multiscale linear T=1→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R32b)
+97e2782	314.7593	0.6	discard	SPSA d2/e128/p8 linear T=1→5 bs=64 lr=5e-2 eps=1e-2 fixed=64 all 1h (R32b, bs64 terrible)
+3508dbe	205.7596	0.6	keep	R33 SPSA d2/e128/p8 lr=5e-2 eps=1e-2 T linear 1→4 no-curv fixed=32 all (NEW BEST SPSA!)
+3508dbe	206.4812	0.6	keep	R33 SPSA d2/e128/p8 lr=8e-2 eps=1e-2 T linear 1→5 no-curv fixed=32 all
+3508dbe	209.4590	0.6	keep	R33 SPSA d2/e128/p8 lr=5e-2 eps=1e-2 T linear 1→3 no-curv fixed=32 all
+3508dbe	246.2173	0.6	discard	R33 SPSA T linear 1→7 (wider range worse)
+3508dbe	248.8540	0.6	discard	R33 SPSA T linear 1→5 multi_step loss
+3508dbe	263.7093	0.6	discard	R33 SPSA T linear 1→5 ssim_mse loss
+3508dbe	309.2378	0.6	discard	R33 SPSA T linear 1→5 curvature (curvature hurts!)
+3508dbe	309.9668	0.6	discard	R33 SPSA T linear 1→5 n_perts=200 (fewer steps bad)
+3508dbe	330.2059	0.6	discard	R33 SPSA T linear 1→5 vary-noise (terrible)
+b237a95	210.9856	0.6	keep	R31 SPSA T linear 1→5 lr=5e-2 eps=1e-2 no-curv fixed=32 all (other conv)
+b237a95	225.9250	0.6	keep	R31 SPSA ssim_mse warmup30% lr=5e-2 eps=1e-2 (other conv)
+b237a95	227.0251	0.6	discard	R31 SPSA ssim_mse no-curv lr=5e-2 eps=1e-2 (other conv)
+b237a95	242.0410	0.6	discard	R31 SPSA lognormal T mu=1 s=0.5 no-curv eps=1e-2 (other conv)
+b237a95	253.3235	0.6	discard	R31 SPSA baseline repro lr=5e-2 eps=1e-2 T=2 (other conv)
+b237a95	293.4496	0.6	discard	R31 SPSA curvature eps=1e-2 T=2 (curvature hurts)
+b237a95	313.7050	0.6	discard	R31 SPSA curvature tied eps=lr=5e-2 T=2 (terrible)
+d335f4c	209.4590	0.6	keep	SPSA d2/e128/p8 linear T=1→3 lr=5e-2 eps=1e-2 fixed=32 all 1h (R33)
+d335f4c	205.7596	0.6	keep	SPSA d2/e128/p8 linear T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (R33 NEW BEST SPSA!)
+d335f4c	246.2173	0.6	discard	SPSA d2/e128/p8 linear T=1→7 lr=5e-2 eps=1e-2 fixed=32 all 1h (R33, too wide)
+d335f4c	263.7093	0.6	discard	SPSA d2/e128/p8 linear T=1→5 ssim_mse lr=5e-2 eps=1e-2 fixed=32 all 1h (R33)
+d335f4c	248.8540	0.6	discard	SPSA d2/e128/p8 linear T=1→5 multi_step lr=5e-2 eps=1e-2 fixed=32 all 1h (R33)
+d335f4c	206.4812	0.6	keep	SPSA d2/e128/p8 linear T=1→5 lr=8e-2 eps=1e-2 fixed=32 all 1h (R33, higher lr good)
+d335f4c	309.2378	0.6	discard	SPSA d2/e128/p8 linear T=1→5 curvature lr=5e-2 eps=1e-2 fixed=32 all 1h (R33)
+d335f4c	330.2059	0.6	discard	SPSA d2/e128/p8 linear T=1→5 vary-noise lr=5e-2 eps=1e-2 fixed=32 all 1h (R33, terrible)
+d335f4c	309.9668	0.6	discard	SPSA d2/e128/p8 linear T=1→5 n_perts=200 lr=5e-2 eps=1e-2 fixed=32 all 1h (R33, fewer steps)
+97e2782	292.5838	0.6	discard	R32 SSIM+MSE lognormal T (mu=1 s=0.5) no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	0.000000	0.0	crash	R32 SSIM+MSE lr=1e-1 no curv (FAIL at step 811 diverged)
+97e2782	299.6584	0.6	discard	R32 SSIM+MSE n_perts=200 no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	303.1242	0.6	discard	R32 SSIM+MSE depth=4 no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	312.2961	0.6	discard	R32 pure SSIM no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	335.0518	0.6	discard	R32 pure FFT no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	301.9340	0.6	discard	R32 SSIM+MSE linear T 2->10 no curv lr=5e-2 eps=1e-2 fixed32 (contention)
+97e2782	300.7412	0.6	discard	R32 SSIM+MSE eps=5e-3 no curv lr=5e-2 fixed32 (contention)
+b237a95	205.7175	0.6	keep	R35 SPSA lr=1e-1 eps=1e-2 T linear 1→4 no-curv fixed=32 all (NEW BEST! 4165 steps)
+b237a95	207.5365	0.6	keep	R35 SPSA lr=5e-2 eps=1e-2 T linear 1→4 repro (4555 steps)
+b237a95	208.4398	0.6	keep	R35 SPSA lr=8e-2 eps=1e-2 T linear 1→4 (4387 steps)
+b237a95	212.4007	0.6	keep	R35 SPSA n_perts=50 T linear 1→5 (8065 steps! more steps helps)
+b237a95	212.6555	0.6	discard	R35 SPSA lr=5e-2 T linear 1→5 clean (3985 steps)
+b237a95	222.9972	0.6	discard	R35 SPSA T linear 1→3 (too narrow, 5126 steps)
+b237a95	276.6979	0.6	discard	R35 SPSA d4 T linear 1→4 (more params = worse for SPSA)
+b237a95	278.0412	0.6	discard	R35 SPSA eps=2e-2 T linear 1→4 (larger eps worse)
+0ea1472	207.5365	0.6	keep	SPSA d2/e128/p8 linear T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (R35, repro confirms)
+0ea1472	212.6555	0.6	discard	SPSA d2/e128/p8 linear T=1→5 lr=5e-2 eps=1e-2 fixed=32 all 1h (R35, clean repro)
+0ea1472	222.9972	0.6	discard	SPSA d2/e128/p8 linear T=1→3 lr=5e-2 eps=1e-2 fixed=32 all 1h (R35, too tight)
+0ea1472	208.4398	0.6	keep	SPSA d2/e128/p8 linear T=1→4 lr=8e-2 eps=1e-2 fixed=32 all 1h (R35)
+0ea1472	205.7175	0.6	keep	SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=32 all 1h (R35 TIED BEST!)
+0ea1472	276.6979	0.6	discard	SPSA d4/e128/p8 linear T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (R35, depth hurts)
+0ea1472	278.0412	0.6	discard	SPSA d2/e128/p8 linear T=1→4 lr=5e-2 eps=2e-2 fixed=32 all 1h (R35, larger eps bad)
+0ea1472	212.4007	0.6	discard	SPSA d2/e128/p8 linear T=1→5 lr=5e-2 eps=1e-2 n_perts=50 fixed=32 all 1h (R35, more steps)
+0ea1472	318.5180	0.6	discard	R36 SPSA d2/e128/p8 vary-noise linear T=1→4 lr=1e-1 eps=1e-2 fixed=32 all 1h (noise diversity HURTS)
+0ea1472	217.9076	0.6	discard	R36 SPSA d2/e128/p8 curriculum(60% T=1→4) lr=1e-1 eps=1e-2 fixed=32 all 1h (worse than linear)
+0ea1472	217.8134	0.6	discard	R36 SPSA d2/e128/p8 exponential T=1→4 lr=1e-1 eps=1e-2 fixed=32 all 1h (worse than linear)
+0ea1472	240.1635	0.6	discard	R36 SPSA d2/e128/p8 reverse T=4→1 lr=1e-1 eps=1e-2 fixed=32 all 1h (starting T=1 critical)
+0ea1472	240.1635	0.6	discard	SPSA d2/e128/p8 reverse T=4→1 lr=5e-2 eps=1e-2 fixed=32 all 1h (R36)
+0ea1472	217.8134	0.6	discard	SPSA d2/e128/p8 exponential T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (R36)
+0ea1472	154.2726	1.2	discard	INVALID: was BP not SPSA! Other conversation's backprop experiment overwrote log. Curriculum d2/e128/p8 T=1(60%)→4 (R36)
+0ea1472	0.000000	0.0	crash	SPSA d2/e128/p8 cyclic T=1↔4 lr=5e-2 eps=1e-2 fixed=32 (R36, killed at 91%)
+97e2782	228.5523	0.6	discard	R33 SSIM+MSE no curv lr=5e-2 eps=1e-2 fixed32 reproduce
+97e2782	227.3901	0.6	discard	R33 SSIM+MSE lr=7e-2 eps=1e-2 no curv fixed32
+97e2782	211.9528	0.6	keep	R33 SSIM+MSE lognormal T (mu=0.5 s=0.3) no curv lr=5e-2 eps=1e-2 fixed32 (NEW BEST SPSA!)
+97e2782	242.9497	0.6	discard	R33 SSIM+MSE T=1 no curv lr=5e-2 eps=1e-2 fixed32
+97e2782	288.2995	0.6	discard	R33 SSIM+MSE T=5 no curv lr=5e-2 eps=1e-2 fixed32 (too slow)
+97e2782	329.9773	0.6	discard	R33 SSIM+MSE random batch (no fixed) no curv lr=5e-2 eps=1e-2
+97e2782	242.2729	0.6	discard	R33 MSE denoising control no curv lr=5e-2 eps=1e-2 fixed32
+97e2782	305.9803	0.6	discard	R33 SSIM+MSE fixed=64 no curv lr=5e-2 eps=1e-2
+3508dbe	207.7310	0.6	discard	R37 SPSA n_perts=50 lr=5e-2 eps=1e-2 T linear 1→4 (8327 steps, 2x more but not better)
+3508dbe	207.9017	0.6	discard	R37 SPSA n_perts=50 lr=8e-2 eps=1e-2 T linear 1→4 (7887 steps)
+b237a95	217.8134	0.6	discard	R36 SPSA exponential T 1→4 (other conv, 4748 steps)
+b237a95	217.9076	0.6	discard	R36 SPSA curriculum T 1→4 (other conv, 5177 steps)
+b237a95	240.1635	0.6	discard	R36 SPSA reverse T 4→1 (other conv, 4247 steps)
+b237a95	318.5180	0.6	discard	R36 SPSA vary-noise T linear 1→4 (terrible)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=1.5e-1 T linear 1→4 (diverged at 14% - lr too high)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=2e-1 T linear 1→4 (diverged at 11%)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=1e-1 multi_step_exp T linear 1→4 (diverged at 63%)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=1e-1 np50 T linear 1→4 (diverged at 12%)
+0ea1472	262.3380	0.6	discard	R36b SPSA lr=1e-1 multi_step T linear 1→4 (uniform step weighting worse)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=3e-1 T linear 1→4 (diverged at 9%)
+0ea1472	0.000000	0.0	crash	R36b SPSA lr=1e-1 np25 T linear 1→4 (diverged at 9%)
+0ea1472	289.3750	0.6	discard	R36b SPSA lr=1e-1 warmup30→multi_step_exp T linear 1→4 (worse than denoising)
+a5ede73	207.9704	0.6	discard	R37 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 grad_clip=1.0 fixed=32 all 1h (4448 steps, clipping doesn't help)
+a5ede73	207.7310	0.6	discard	R37 SPSA d2/e128/p8 linear T=1→4 lr=5e-2 eps=1e-2 n_perts=50 fixed=32 all 1h (8326 steps, same as n_perts=100)
+a5ede73	212.9999	0.6	discard	R37 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 grad_clip=0.1 fixed=32 all 1h (aggressive clip hurts)
+a5ede73	207.9017	0.6	discard	R37 SPSA d2/e128/p8 linear T=1→4 lr=8e-2 eps=1e-2 n_perts=50 fixed=32 all 1h (7886 steps)
+a5ede73	287.0835	0.6	discard	R37 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps cosine_decay(0.1→0.01) 1h (eps too high at start = bad)
+a5ede73	262.3380	0.6	discard	R36b SPSA multi_step loss lr=5e-2 eps=1e-2 linear T=1→4 1h (multi_step worse than denoising)
+a5ede73	289.3750	0.6	discard	R36b SPSA multi_step_exp+warmup lr=5e-2 eps=1e-2 linear T=1→4 1h (exp weighting bad)
+b237a95	207.9704	0.6	discard	R37 SPSA grad clip=1.0 lr=1e-1 T linear 1→4 (other conv, 4449 steps)
+b237a95	212.9999	0.6	discard	R37 SPSA grad clip=0.1 lr=1e-1 T linear 1→4 (other conv, clip too aggressive)
+b237a95	287.0835	0.6	discard	R37 SPSA eps_decay T linear 1→4 (terrible)
+b237a95	208.9708	0.6	discard	R38 SPSA curriculum60 lr=1e-1 T 1→4 (other conv, 5521 steps)
+b237a95	210.3544	0.6	discard	R38 SPSA curriculum60 repro T 1→4 (other conv, 5111 steps)
+b237a95	210.3717	0.6	discard	R38 SPSA curriculum60 T 1→6 (other conv, 5139 steps)
+b237a95	231.5135	0.6	discard	R38 SPSA curriculum80 T 1→4 (other conv, long warmup hurts)
+0af2477	210.3544	0.6	discard	SPSA d2/e128/p8 curriculum 60% T=1→4 lr=5e-2 eps=1e-2 fixed=32 5111 steps (R38, GPU contention)
+0af2477	231.5135	0.6	discard	SPSA d2/e128/p8 curriculum 80% T=1→4 lr=5e-2 eps=1e-2 fixed=32 5617 steps (R38)
+0af2477	208.9708	0.6	discard	SPSA d2/e128/p8 curriculum 60% T=1→4 lr=1e-1 eps=1e-2 fixed=32 5521 steps (R38)
+0af2477	210.3717	0.6	discard	SPSA d2/e128/p8 curriculum 60% T=1→6 lr=5e-2 eps=1e-2 fixed=32 5139 steps (R38)
+a5ede73	210.3544	0.6	discard	R38 SPSA curriculum60 T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (repro, worse than linear)
+a5ede73	231.5135	0.6	discard	R38 SPSA curriculum80 T=1→4 lr=5e-2 eps=1e-2 fixed=32 all 1h (too long at T=1)
+a5ede73	208.9708	0.6	discard	R38 SPSA curriculum60 T=1→4 lr=1e-1 eps=1e-2 fixed=32 all 1h (lr=1e-1 helps but still worse than linear)
+a5ede73	210.3717	0.6	discard	R38 SPSA curriculum60 T=1→6 lr=5e-2 eps=1e-2 fixed=32 all 1h (wider range doesn't help)
+a5ede73	227.5450	0.6	discard	R39 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps cosine_decay(2e-2→5e-3) 1h (even gentle eps decay hurts)
+a5ede73	219.0434	0.6	discard	R39 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=64 all 1h (more data diversity hurts)
+a5ede73	289.6251	0.6	discard	R39 SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 wd=0.01 1h (weight decay destroys SPSA)
+0af2477	206.3214	0.6	keep	SPSA d2/e128/p8 curriculum 60% T=1→4 lr=5e-2 eps=1e-2 fixed=32 clean GPU 5124 steps (R40)
+0af2477	208.6027	0.6	discard	SPSA d2/e128/p8 curriculum 60% T=1→4 lr=1e-1 eps=1e-2 fixed=32 clean GPU 5275 steps (R40)
+0af2477	206.9049	0.6	keep	SPSA d2/e128/p8 curriculum 40% T=1→4 lr=5e-2 eps=1e-2 fixed=32 clean GPU 5091 steps (R40)
+0af2477	227.5450	0.6	discard	R39 SPSA gentle eps decay T linear 1→4 (eps decay still bad)
+0af2477	219.0434	0.6	discard	R39 SPSA fixed-batch-size=64 T linear 1→4 (more images doesn't help)
+0af2477	289.6251	0.6	discard	R39 SPSA weight-decay=0.01 lr=1e-1 T linear 1→4 (wd kills SPSA)
+0af2477	206.3214	0.6	keep	R40 SPSA curriculum60 T=1→4 lr=5e-2 eps=1e-2 clean (close to best!)
+0af2477	208.6027	0.6	discard	R40 SPSA curriculum60 T=1→4 lr=1e-1 eps=1e-2 clean
+0af2477	206.9049	0.6	discard	R40 SPSA curriculum40 T=1→4 lr=5e-2 eps=1e-2 clean
+a5ede73	0.0000	0.6	crash	R41 forward-FD SPSA lr=5e-2 eps=1e-2 linear T=1→4 (diverged at 7% - forward diff bias too large)
+a5ede73	0.0000	0.6	crash	R41 forward-FD SPSA lr=1e-1 eps=1e-2 linear T=1→4 (diverged at 4% - 2x effective lr)
+a5ede73	203.6165	0.6	keep	R39b SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 all 1h (NEW BEST! more fixed images helps)
+a5ede73	204.1571	0.6	keep	R39b SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=32 all wu=0.005 1h
+a5ede73	205.8267	0.6	discard	R39b SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=32 all 1h (repro baseline)
+a5ede73	211.4357	0.6	discard	R39b SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 wd=0.1 fixed=32 all 1h (wd hurts)
+a5ede73	206.3214	0.6	discard	R40 SPSA curriculum60 T=1→4 lr=5e-2 clean 1h
+a5ede73	208.6027	0.6	discard	R40 SPSA curriculum60 T=1→4 lr=1e-1 clean 1h
+a5ede73	206.9049	0.6	discard	R40 SPSA curriculum40 T=1→4 lr=5e-2 clean 1h
+a5ede73	205.8267	0.6	keep	R39b SPSA repro best lr=1e-1 T linear 1→4 eps=1e-2 d2/e128/p8 fixed=32 4484 steps (confirms 205.7)
+a5ede73	0.000000	0.0	crash	R39b SPSA lr=1e-1 warmdown=0 T linear 1→4 (no warmdown → diverges at 23%)
+a5ede73	211.4357	0.6	discard	R39b SPSA lr=1e-1 warmdown=0.1 T linear 1→4 (shorter warmdown worse)
+a5ede73	0.000000	0.0	crash	R39b SPSA lr=1e-1 warmdown=0.5 T linear 1→4 (diverges at 23%)
+a5ede73	0.000000	0.0	crash	R39b SPSA lr=1e-1 warmup=0.2 T linear 1→4 (diverges at 22%)
+a5ede73	204.1571	0.6	keep	R39b SPSA lr=1e-1 warmup=0.05 T linear 1→4 (shorter warmup helps! 2nd best)
+a5ede73	0.000000	0.0	crash	R39b SPSA e192 lr=8e-2 T linear 1→4 (wider model diverges at 61%)
+a5ede73	203.6165	0.7	keep	R39b SPSA lr=1e-1 fixed=48 T linear 1→4 (NEW BEST! more images help)
+a5ede73	212.4426	0.7	discard	R40b SPSA f48 + warmup=0.05 linear T=1→4 lr=1e-1 (combining wu+f48 doesn't help)
+a5ede73	223.0951	0.7	discard	R40b SPSA f64 + warmup=0.05 linear T=1→4 lr=1e-1 (f64+wu terrible)
+a5ede73	205.3784	0.7	discard	R40b SPSA f48 + warmup=0.03 linear T=1→4 lr=1e-1
+a5ede73	206.3522	0.7	discard	R40b SPSA f48 + warmup=0.01 linear T=1→4 lr=1e-1
+a5ede73	210.5332	0.7	discard	R40b SPSA f48 + lr=8e-2 linear T=1→4 (lr=1e-1 better)
+a5ede73	206.8010	0.7	discard	R40b SPSA f48 + warmdown=0.2 linear T=1→4 lr=1e-1
+a5ede73	207.9309	0.7	discard	R40b SPSA f48 + T linear 1→3 lr=1e-1 (1→4 better)
+a5ede73	205.3784	0.6	keep	R40b SPSA d2/e128/p8 linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 wu=3steps all 1h (near-best!)
+a5ede73	206.3522	0.6	discard	R40b SPSA linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 wu=1step all 1h
+a5ede73	212.4426	0.6	discard	R40b SPSA linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 wu=5steps all 1h
+a5ede73	206.8010	0.6	discard	R40b SPSA linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 wd=0.02 all 1h
+a5ede73	207.9309	0.6	discard	R40b SPSA linear T=1→4 lr=1e-1 eps=1e-2 fixed=48 T_1to3 all 1h
+a5ede73	210.5332	0.6	discard	R40b SPSA linear T=1→4 lr=8e-2 eps=1e-2 fixed=48 all 1h
+a5ede73	223.0951	0.6	discard	R40b SPSA linear T=1→4 lr=1e-1 eps=1e-2 fixed=64 wu=5steps all 1h (too many fixed)
+a5ede73	229.5461	0.7	discard	R42 SPSA f48 + augment-fixed (hflip) linear T=1→4 lr=1e-1 (augmentation hurts)
+a5ede73	212.4426	0.6	discard	R40b SPSA warmup=5%+fixed=48 lr=1e-1 T=1→4 4209 steps (combination didn't stack)
+a5ede73	223.0951	0.6	discard	R40b SPSA warmup=5%+fixed=64 lr=1e-1 T=1→4 (64 images too many)
+a5ede73	205.3784	0.6	discard	R40b SPSA warmup=3%+fixed=48 lr=1e-1 T=1→4 4322 steps
+a5ede73	206.3522	0.6	discard	R40b SPSA warmup=1%+fixed=48 lr=1e-1 T=1→4 4462 steps
+a5ede73	210.5332	0.6	discard	R40b SPSA lr=8e-2+fixed=48 T=1→4 4531 steps (lower lr worse)
+a5ede73	206.8010	0.6	discard	R40b SPSA warmdown=20%+fixed=48 lr=1e-1 T=1→4 4142 steps
+a5ede73	0.000000	0.0	crash	R40b SPSA fixed=96 lr=1e-1 T=1→4 (diverged)
+a5ede73	207.9309	0.6	discard	R40b SPSA fixed=48 T=1→3 lr=1e-1 5237 steps (T=1→3 worse than 1→4)
+a5ede73	0.0000	0.7	crash	R42 SPSA f48 + batch-refresh 20% linear T=1→4 lr=1e-1 (diverged at 50% when new images loaded)
+a5ede73	0.0000	0.7	crash	R42 SPSA f48 + eps=5e-3 linear T=1→4 lr=1e-1 (diverged at 24% - lr/eps ratio too high)
+68e5a39	0.000000	0.0	crash	R46 SPSA stochastic_pert T=1→4 f48 lr=1e-1 (killed at 32% by other conv)
+68e5a39	0.000000	0.0	crash	R46 SPSA stochastic T=1→4 f48 lr=1e-1 (killed at 32%)
+68e5a39	0.000000	0.0	crash	R46 SPSA guided_pert=0.3 linear T=1→4 f48 (diverged at 8.6% — gradient bias!)
+68e5a39	0.000000	0.0	crash	R46 SPSA multi-noise linear T=1→4 f48 (killed at 32%)
+68e5a39	0.000000	0.0	crash	R46 SPSA n_perts=50 linear T=1→4 f48 lr=1e-1 (killed at 32% — loss 0.553 BEST!)
+68e5a39	0.000000	0.0	crash	R46 SPSA stochpert+multinoise T=1→4 f48 (killed at 32%)
+68e5a39	0.000000	0.0	crash	R46 SPSA guided=0.3+multinoise T=1→4 f48 (diverged at 9.4% — gradient bias!)
+68e5a39	0.000000	0.0	crash	R46 SPSA n_perts=50+stochpert T=1→4 f48 (loss exploded at 20% — too much variance)
+68e5a39	0.000000	0.0	crash	R46b SPSA phased T=1→4 f48 lr=1e-1 (killed at 92%! — was promising)
+68e5a39	0.000000	0.0	crash	R46b SPSA adaptive_perts 100→25 f48 lr=1e-1 (diverged at 55% — needs warmdown)
+68e5a39	0.000000	0.0	crash	R49 SPSA sign-update (signSGD) linear T=1→4 f48 lr=1e-1 (diverged immediately — loss 59.6 at step 231)
+none	219.8002	0.0	done	R49 SPSA baseline f48 lr=1e-1 linear T=1→4 eps=1e-2 np=100 (GPU contention reduced steps)
+none	210.2383	0.0	done	R49 SPSA stochastic_pert T f48 lr=1e-1 eps=1e-2 np=100 (beats baseline under same contention!)
+none	0.0000	0.0	crash	R49 SPSA seed=123 f48 lr=1e-1 linear T=1→4 (DIVERGED at 54%! loss 1.5→8.6)
+none	0.0000	0.0	crash	R48 SPSA guided-pert 0.3 f48 lr=1e-1 (DIVERGED at 8.8%! loss rising rapidly)
+none	0.0000	0.0	crash	R48 SPSA n_perts=50 f48 lr=1e-1 (DIVERGED at 18.2%! gradient noise too high)
+68e5a39	207.6199	0.7	discard	R49 SPSA baseline repro f48 linear T=1→4 lr=1e-1 4485 steps
+68e5a39	208.7758	0.7	discard	R49 SPSA stochastic T per step f48 T=1→4 lr=1e-1 5093 steps (T diversity per step doesn't help)
+68e5a39	210.2383	0.7	discard	R49 SPSA stochastic_pert T per pert f48 T=1→4 lr=1e-1 4920 steps (T diversity per pert harmful)
+68e5a39	219.8002	0.7	discard	R49 SPSA baseline f48 lr=1e-1 4239 steps (contended GPU, other conv running)
+68e5a39	0.000000	0.0	crash	R49 SPSA n_perts=50 f48 linear T=1→4 lr=1e-1 (killed at 19.4% by other conv)
+68e5a39	0.000000	0.0	crash	R49 SPSA n_perts=50+stochstep f48 T=1→4 lr=1e-1 (killed at 17.5%, loss diverging)
+68e5a39	207.6199	0.6	discard	R49 SPSA baseline_repro f48 linear T=1→4 lr=1e-1 eps=1e-2 1h
+68e5a39	208.7758	0.6	discard	R49 SPSA stochstep f48 T=1→4 lr=1e-1 eps=1e-2 1h (stoch T slightly worse)
+68e5a39	210.2383	0.6	discard	R49 SPSA stochpert f48 T=1→4 lr=1e-1 eps=1e-2 1h (stoch perturbation worse)
+68e5a39	219.8002	0.6	discard	R49 SPSA f48 baseline lr=1e-1 1h (seed variation)
+68e5a39	229.5461	0.6	discard	R42 SPSA augment+f48 lr=1e-1 linear T=1→4 1h (augmentation HURTS SPSA)
+4db98d7	0.000000	0.0	crash	R51 SPSA n_perts=50 lr=1e-1 linear T=1→4 f48 (DIVERGED at 30% — lr too high for np=50)
+4db98d7	0.000000	0.0	crash	R51 SPSA n_perts=25 lr=2.5e-2 linear T=1→4 f48 (killed at 51.2%, loss 0.497, step 10498 — excellent loss!)
+4db98d7	0.000000	0.0	crash	R51 SPSA n_perts=50 lr=5e-2 + Adam (beta1=0.9 beta2=0.99) DIVERGED at 6.7% — loss 26.3! Adam incompatible with SPSA
+4db98d7	0.000000	0.0	crash	R51 SPSA n_perts=100 lr=1e-1 + Adam (beta1=0.9 beta2=0.99) DIVERGED at 6.6% — loss 10.8! Adam fails
+4db98d7	0.000000	0.0	crash	R51 SPSA n_perts=25 lr=2.5e-2 + Adam DIVERGED at 5.8% — loss 88! Adam catastrophic
+4db98d7	0.000000	0.0	discard	R51 SPSA pert-recycle=5 lr=1e-1 np=100 — loss 0.912 at 25.5% (worse than baseline 0.701!)
+4db98d7	0.000000	0.0	discard	R51 SPSA layerwise lr=1e-1 np=100 — loss 1.189 at 25.5% (much worse than baseline)
+4db98d7	206.2204	0.6	discard	R51 SPSA n_perts=50 lr=5e-2 f48 linear T=1→4 1h ~12000 steps (training loss 0.418 BEST ever but FID worse than np=100!)
+4db98d7	209.3084	0.6	discard	R51 SPSA stochastic_pert f48 lr=1e-1 np=100 1h (other conv, stochpert slightly worse)
+none	209.3084	0.0	done	R51 SPSA stochastic_pert T f48 lr=1e-1 eps=1e-2 np=100 (GPU contention, 33-39 img/sec)
+none	206.2204	0.0	done	R51 SPSA n_perts=50 lr=5e-2 linear T=1→4 f48 eps=1e-2 (GPU contention, 55 img/sec) — PROMISING
+4db98d7	206.0010	0.6	discard	R51b SPSA n_perts=50 lr=5e-2 f48 linear T=1→4 1h (confirms np=50 FID ~206, worse than np=100 baseline 203.62)
+68e5a39	209.3084	0.6	discard	R51 SPSA stochpert f48 T=1→4 lr=1e-1 eps=1e-2 1h
+68e5a39	206.2204	0.6	discard	R51 SPSA np50 lr=5e-2 f48 T=1→4 eps=1e-2 1h (8812 steps, more steps ≠ better)
+68e5a39	206.0010	0.6	discard	R51 SPSA np50 lr=5e-2 f48 T=1→4 eps=1e-2 1h (repro)
+4db98d7	211.3531	0.6	discard	R51b SPSA n_perts=50 lr=7.5e-2 f48 linear T=1→4 1h (higher lr, worse FID despite lower loss)
+4db98d7	212.6534	0.6	discard	R51b SPSA n_perts=75 lr=7.5e-2 f48 linear T=1→4 1h
+4db98d7	330.9344	0.6	discard	R51b SPSA n_perts=50 lr=5e-2 multi-noise f48 1h (CATASTROPHIC — multi-noise ruins np=50!)
+4db98d7	205.0946	0.6	discard	R51b SPSA n_perts=25 lr=2.5e-2 f48 linear T=1→4 1h ~24000 steps (close to baseline 203.62!)
+4db98d7	0.000000	0.0	crash	R52 SPSA f96 np=100 lr=1e-1 (DIVERGED at 40% — lr too high for 96 images)
+none	205.4763	0.0	done	R52 SPSA np=50 stochastic_pert T lr=5e-2 f48 eps=1e-2 (71-86 img/sec contention)
+4db98d7	204.9336	0.6	discard	R51b SPSA n_perts=50 lr=5e-2 f48 linear T=1→4 2hr (2× training time barely improves FID: 204.93 vs 206.00)
+4db98d7	328.3945	0.6	discard	R52 SPSA np=100 lr=1e-1 f48 vary-noise 1h (CATASTROPHIC — changing noise seed each step breaks SPSA!)
+4db98d7	0.000000	0.0	crash	R52 SPSA np=100 lr=1e-1 f48 batch-refresh=0.2 1h (DIVERGED at 71% loss 3.33 — batch refresh too disruptive)
+none	205.4763	0.6	discard	R52 SPSA np50 stochpert lr=5e-2 f48 T=1→4 1h (stochpert doesn't help with np=50)
+none	328.3945	0.6	discard	R52 SPSA np100 vary-noise lr=1e-1 f48 T=1→4 1h (vary-noise catastrophic with np=100 too!)
+none	204.9336	0.6	discard	R51b SPSA np50 lr=5e-2 f48 T=1→4 2h (2hr barely helps: 204.93 vs 206.0 for 1h)
+none	0.000000	0.0	crash	R52 SPSA np100 batch-refresh-pct=0.2 lr=1e-1 f48 T=1→4 1h (diverged at 70%)
+none	0.000000	0.0	crash	R52 SPSA np100 f96 lr=1e-1 T=1→4 1h (diverged at 40%)
+none	0.000000	0.0	crash	R52 SPSA ssimmse-variant lr=1e-1 f48 T=1→4 1h (diverged at 30%)
+1ce1761	316.6034	0.7	discard	R52b f96 (96 fixed images) lr=5e-2 np=100 eps=1e-2 linear T=1→4 1h (f96 >> f48 overfitting)
+1ce1761	293.3469	0.7	discard	R53 RK4 ODE T=1 constant np=100 lr=1e-1 eps=1e-2 f48 1h (4th order overkill, too few steps)
+none	293.3469	0.7	discard	R53 SPSA RK4-ODE T=1 fixed np100 lr=1e-1 f48 1h (4th-order ODE: better integration but 2.4x fewer steps → worse FID)
+none	0.000000	0.0	crash	R53 SPSA multiscale-MSE T=1→4 np100 lr=1e-1 f48 1h (diverged at 25% — multi-scale MSE unstable at lr=1e-1)
+1ce1761	281.7089	0.7	discard	R53 midpoint ODE T=1→2 np=100 lr=1e-1 eps=1e-2 f48 1h (2nd order Euler, 2× evals but half steps)
+none	203.7501	0.0	done	R52 SPSA np=50 lr=5e-2 linear T=1→4 f48 eps=1e-2 2hr (56-74 img/sec contention) — MATCHES BEST!
+none	0.0000	0.0	crash	R52 SPSA stochpert np=100 lr=1e-1 f48 (stalled at 17% — GPU0 starved by 45 processes)
+none	281.7089	0.7	discard	R53 SPSA Midpoint-ODE T=1→2 np100 lr=1e-1 f48 1h (2nd-order ODE: 1.4x slower per step → fewer updates → worse)
+none	300.2099	0.7	discard	R53 SPSA log-MSE T=1→4 np100 lr=1e-1 f48 1h (log(MSE) loss diverged — amplifies gradients at low MSE)
+none	206.0993	0.7	discard	R53 SPSA Euler baseline T=1→4 np100 lr=1e-1 f48 1h (reproduce, slight contention: 206.1 vs 203.6)
+1ce1761	213.5912	0.7	discard	R52 2hr budget (7200s) optimal recipe np=100 lr=1e-1 f48 linear T=1→4 (WORSE than 1hr - overfitting)
+1ce1761	300.2099	0.7	discard	R53 logmse loss np=100 lr=1e-1 f48 linear T=1→4 1h (log(MSE) destabilizes SPSA gradient)
+1ce1761	206.0993	0.7	discard	R53 euler baseline repro (other conv) np=100 lr=1e-1 f48 linear T=1→4 1h
+1ce1761	208.5319	0.7	discard	R54 cosine-spaced ODE timesteps np=100 lr=1e-1 f48 linear T=1→4 1h (train/eval mismatch: cosine train vs uniform eval)
+1ce1761	308.2880	0.7	discard	R54 epsilon cosine decay 1e-1→1e-2 (10×) np=100 lr=1e-1 f48 linear T=1→4 1h (too disruptive)
+1ce1761	247.9464	0.7	discard	R54 Heun method (trapezoidal) T=1→2 np=100 lr=1e-1 f48 1h (2× evals, half steps, worse FID)
+1ce1761	307.5299	0.7	discard	R54 epsilon cosine decay 5e-2→1e-2 (5×) np=100 lr=1e-1 f48 linear T=1→4 1h (early large eps damages model permanently)
+1ce1761	0.000000	0.0	crash	R54 warm-restart denoising (two-pass ODE) np=100 lr=1e-1 f48 1h (diverged at 38% - 1.5× evals per pert)
+none	217.2383	0.7	discard	R53 SPSA repeat-blocks=2 (eff.depth=4) d2/e128/p8 lr=1e-1 f48 T=1→4 1h (weight sharing worse: 217 vs 206)
+none	300.2420	0.7	discard	R53 SPSA Huber loss T=1→4 np100 lr=1e-1 f48 1h (smooth_l1 terrible for diffusion)
+none	283.5070	0.7	discard	R53 SPSA repeat-blocks=4 (eff.depth=8) d2/e128/p8 lr=1e-1 f48 T=1→4 1h (weight sharing much worse: 283.5)
+1ce1761	219.4420	0.7	discard	R54 median clip k=3 np=100 lr=1e-1 f48 linear T=1→4 1h (outlier clipping doesn't help)
+1ce1761	226.8957	0.7	discard	R54 f64 (64 fixed images) np=100 lr=1e-1 linear T=1→4 1h (more images = worse FID)
+none	0.000000	0.0	crash	R53 SPSA Midpoint-ODE T=1→4 np100 lr=1e-1 f48 1h (diverged at 57% — midpoint unstable at higher T)
+none	0.000000	0.0	crash	R53 SPSA RK4-ODE T=1→2 np100 lr=1e-1 f48 1h (diverged at 57% — RK4 unstable with T ramp)
+none	226.0391	0.7	discard	R55 SSIM+MSE light (0.1×SSIM) np100 lr=1e-1 f48 linear T=1→4 1h (FIRST SSIM to complete! But 226 > 203 baseline — SSIM hurts)
+none	328.3945	0.7	discard	R52 vary noise np100 lr=1e-1 f48 1h (stochastic noise = bad)
+none	205.4763	0.7	discard	R52 np50 stochastic pert lr=5e-2 1h (stochastic perturbations neutral)
+none	203.7501	0.7	contender	R52 np50 lr=5e-2 2hr (ties best! 203.75 vs 203.62 — longer training with fewer perts matches)
+none	300.2099	0.7	discard	R53 logMSE loss np100 lr=1e-1 f48 linear T=1→4 1h (log(MSE) doesn't help)
+none	206.0993	0.7	contender	R53 Euler baseline np100 lr=1e-1 f48 linear T=1→4 1h (206 sanity check, consistent)
+none	213.5912	0.7	discard	R52 2hr standard config (213 — longer not always better?)
+none	281.7089	0.7	discard	R53 Midpoint ODE T=1→2 np100 lr=1e-1 f48 1h (2nd order ODE solver worse than Euler)
+none	293.3469	0.7	discard	R53 RK4 ODE T=1 np100 lr=1e-1 f48 1h (4th order ODE solver much worse)
+none	247.9464	0.7	discard	R54 Heun ODE T=1→2 np100 lr=1e-1 f48 1h (Heun better than midpoint/RK4 but still worse)
+none	308.2880	0.7	discard	R54 eps cosine decay 10x (0.1→0.01) np100 lr=1e-1 f48 1h (eps decay hurts — confirmed again)
+none	307.5299	0.7	discard	R54 eps cosine decay 5x (0.05→0.01) np100 lr=1e-1 f48 1h (even gentle eps decay bad)
+none	208.5319	0.7	discard	R54 cosine steps np100 lr=1e-1 f48 linear T=1→4 1h (cosine denoising steps neutral)
+none	204.9336	0.7	contender	R51b np50 lr=5e-2 2hr (205 — consistent np50 result)
+none	212.6534	0.7	discard	R51b np75 lr=7.5e-2 1h (intermediate np75 mediocre)
+none	211.3531	0.7	discard	R51b np50 lr=7.5e-2 1h (np50 needs lr≤5e-2)
+none	330.9344	0.7	discard	R51b np50 multi-noise 1h (bad)
+none	205.0946	0.7	contender	R51b np25 2hr (205 — remarkable, even np25 works with enough time)
+1ce1761	206.2293	0.7	discard	R54 warmdown=0.5 np=100 lr=1e-1 f48 linear T=1→4 1h (longer cooldown slightly worse)
+1ce1761	273.8950	0.7	discard	R54 eps=2e-2 (2× standard) np=100 lr=1e-1 f48 linear T=1→4 1h (larger eps harms gradient quality)
+1ce1761	207.9343	0.7	discard	R54 no warmup (warmup=0.0) np=100 lr=1e-1 f48 linear T=1→4 1h (warmup helps SPSA stability)
+none	205.6333	0.0	done	R53 SPSA np=50 stochpert T lr=5e-2 f48 eps=1e-2 2hr (64-83 img/sec contention) — stochpert NOT better than linear for 2hr
+1ce1761	0.000000	0.0	crash	R54 lr=1.2e-1 (20% higher) np=100 f48 linear T=1→4 1h (diverged at 36% - lr too high)
+1ce1761	0.000000	0.0	crash	R54 warmdown=0.1 (10% cooldown) np=100 lr=1e-1 f48 linear T=1→4 1h (diverged at 72% - too long at full lr)
+none	219.5407	0.7	discard	R55 mse_clamp2 (progressive SSIM blend) np100 lr=1e-1 f48 linear T=1→4 1h (SSIM blend after MSE warmup still hurts)
+1ce1761	205.0855	0.7	discard	R54 T=1→3 (narrower range) np=100 lr=1e-1 f48 linear 1h (more steps but slightly worse than T=1→4)
+none	257.9926	0.7	discard	R54 SPSA no-attention (MLP-only) d2/e128/p8 lr=1e-1 f48 T=1→4 1h (attention IS important: 258 vs 206)
+none	233.7779	0.7	discard	R55 np200 lr=1e-1 f48 linear T=1→4 1h (2x perts = 2x slower steps, worse FID)
+none	0.000000	0.0	crash	R54 SPSA linear-attention d2/e128/p8 lr=1e-1 f48 T=1→4 1h (diverged at 76% — unbounded attention without softmax)
+a22e59d	298.6259	0.7	discard	R54 fixed T=4 constant np=100 lr=1e-1 f48 1h (4× evals per step, fewer total steps)
+none	215.2695	0.7	discard	R55 np100 lr=5e-2 f48 linear T=1→4 1h (lr=5e-2 worse than 1e-1 for np100)
+none	0.000000	0.0	crash	R55 hist_match f48 linear T=1→4 1h (diverged at 47%, loss 3.41 — histogram EMD too noisy)
+none	0.000000	0.0	crash	R55 loss_ensemble f48 linear T=1→4 1h (diverged at 26%, loss 2.91 — multi-component loss unstable)
+none	0.000000	0.0	crash	R55 FFT loss f48 linear T=1→4 1h (diverged at 32%, loss 71 — spectral loss catastrophic)
+none	0.000000	0.0	crash	R55 ssim_mse_fft f48 linear T=1→4 1h (diverged at 57%, triple combo too noisy)
+none	0.000000	0.0	crash	R55b T=2→4 np100 lr=1e-1 f48 1h (diverged at 68% — can't skip T=1 warmup)
+none	0.000000	0.0	crash	R54 depth=3 lr=8e-2 np100 f48 linear T=1→4 1h (loss 1.004 at 12% vs d2 baseline 0.883 — more params hurts SPSA gradient quality)
+none	0.000000	0.0	crash	R56 forward-fd np100 lr=1e-1 f48 linear T=1→4 1h (diverged at 2.7%, loss 1.391 — forward difference too biased without curvature weighting)
+none	0.000000	0.0	crash	R56 sign-update (signSGD) lr=1e-1 np100 f48 linear T=1→4 1h (diverged to loss 63 at 3.8% — each param gets ±lr per step, random walk at SPSA noise level)
+a22e59d	202.8004	0.7	keep	R55 curriculum T: T=1 for 60% then ramp T=1→4 np=100 lr=1e-1 f48 1h *NEW BEST SPSA*
+a22e59d	0.000000	0.0	crash	R55 warmup=0.2 np=100 lr=1e-1 f48 linear T=1→4 1h (diverged at 45.5% - full lr too long)
+none	202.8004	0.7	keep	R55 curriculum T=1→4 (curriculum-frac=0.6) np100 lr=1e-1 f48 1h — NEW BEST! Stay at T=1 for 60% then ramp to T=4
+none	285.6473	0.7	discard	R55b T=1→6 linear np100 lr=1e-1 f48 1h (too wide T range — late steps way too expensive)
+none	223.6437	0.7	discard	R55b T=1→2 linear np100 lr=1e-1 f48 1h (too narrow T range — only 1-2 ODE steps)
+none	243.3723	0.7	discard	R55b depth=3 np100 lr=1e-1 f48 linear T=1→4 1h (more params hurts SPSA: 243 vs 203-206 for d2)
+none	285.6473	0.7	discard	R55b T=1→6 np100 lr=1e-1 f48 1h (too many steps = too slow, worse than T=1→4)
+none	223.6437	0.7	discard	R55b T=1→2 np100 lr=1e-1 f48 1h (too few steps, FID 223 vs 203)
+none	243.3723	0.7	discard	R55b depth=3 np100 lr=1e-1 f48 T=1→4 1h (deeper = fewer steps = worse)
+a22e59d	263.1689	0.7	discard	R55 T=1→5 linear np=100 lr=1e-1 f48 1h (wider T range = fewer steps per hour)
+a22e59d	255.9034	0.7	discard	R55 fixed T=2 constant np=100 lr=1e-1 f48 1h (2× evals, half total steps)
+none	263.1689	0.7	discard	R55 T=1→5 linear np100 lr=1e-1 f48 1h (wider range than T=1→4 is worse)
+none	255.9034	0.7	discard	R55 fixed T=2 np100 lr=1e-1 f48 1h (constant T=2 much worse than ramping)
+none	290.7602	0.7	discard	R55b discrete timesteps np100 lr=1e-1 f48 linear T=1→4 1h (discretized noise schedule worse)
+none	312.1455	0.7	discard	R55b huber loss np100 lr=1e-1 f48 linear T=1→4 1h (smooth_l1 terrible for SPSA diffusion)
+none	0.000000	0.0	crash	R55b T=2→4 linear np100 lr=1e-1 f48 1h (diverged at 68%, loss 6.81 — can't skip T=1 warmup)
+none	0.000000	0.0	crash	R56 trajectory loss (velocity matching) np100 lr=1e-1 f48 linear T=1→4 1h (diverged at 52.8% — velocity matching unstable as T increases)
+none	290.7602	0.7	discard	R55b discrete pixel loss (round to 0-255) np100 lr=1e-1 f48 T=1→4 1h (discretization adds noise to SPSA)
+none	312.1455	0.7	discard	R55b Huber loss (delta=0.5) np100 lr=1e-1 f48 T=1→4 1h (L1 component less informative than L2)
+none	0.000000	0.0	crash	R55b multires MSE (full+half) np100 lr=1e-1 f48 T=1→4 1h (diverged at 30% — multi-scale loss unstable)
+none	209.5906	0.7	discard	R55 best config 2hr np100 lr=1e-1 f48 linear T=1→4 (209.59 WORSE than 1hr 203.62 — OVERFITTING fixed batch!)
+none	0.000000	0.0	crash	R55c f32 (32 fixed images) np100 lr=1e-1 T=1→4 1h (diverged at 27% — too few images)
+none	0.000000	0.0	crash	R55c lr=2e-1 np100 f48 T=1→4 1h (diverged at 20% — lr too high)
+none	0.000000	0.0	crash	R55c T=4 constant np100 lr=1e-1 f48 1h (diverged at 52% — constant high T too hard without ramp)
+a22e59d	242.1825	0.7	discard	R55 self-distillation (T=20 targets 30% weight) np=100 lr=1e-1 f48 linear T=1→4 1h (own targets don't help)
+none	207.5820	0.7	discard	R55b T=1→3 np100 lr=1e-1 f48 1h (207 between T=1→2's 223 and T=1→4's 203 — confirms T=4 optimal)
+none	209.0083	0.0	done	R53 SPSA np=50 lr=5e-2 linear T=1→4 f48 eps=1e-2 4hr (53 img/sec contention) — WORSE than 2hr! Overfitting to f48?
+none	205.6333	0.0	done	R53 SPSA np=50 stochpert T lr=5e-2 f48 2hr (64-83 img/sec) — stochpert no better than linear for 2hr
+none	209.5906	0.7	discard	R55 best config 2hr (np100 lr=1e-1 f48 linear T=1→4 2hr) — longer training does NOT help with linear T (209 vs 203)
+none	209.0083	0.7	discard	R53 np50 lr=0.05 linear T=1→4 4hr — even 4hr doesn't beat 1hr curriculum (209 vs 203)
+none	205.0017	0.7	discard	R56 progressive loss (state matching at each ODE step) np100 lr=1e-1 f48 linear T=1→4 1h — richer signal but doesn't beat curriculum
+a22e59d	204.7009	0.7	discard	R55 curriculum frac=0.5 T=1→4 np=100 lr=1e-1 f48 1h (less time at T=1 = worse)
+a22e59d	206.6240	0.7	discard	R55 curriculum frac=0.7 T=1→4 np=100 lr=1e-1 f48 1h (too short T ramp)
+none	220.7068	0.0	done	R53 SPSA depth=3 np=50 lr=5e-2 linear T=1→4 f48 2hr (42-53 img/sec) — depth=3 WORSE than d2
+a22e59d	207.4674	0.7	discard	R55 curriculum frac=0.6 T=1→3 np=100 lr=1e-1 f48 1h (T=1→3 too narrow)
+a22e59d	204.5792	0.7	discard	R55 curriculum frac=0.8 T=1→4 np=100 lr=1e-1 f48 1h (too short 20% ramp)
+none	206.8669	0.7	discard	R56b curriculum frac=0.4 np100 lr=1e-1 f48 T=1→4 1h — ramp starts too early (206.87 vs frac=0.6 at 202.80)
+none	206.8185	0.7	discard	R56c curriculum frac=0.8 np100 lr=1e-1 f48 T=1→4 1h — ramp starts too late (206.82 — matches frac=0.4 at 206.87!)
+none	211.5924	0.7	discard	R56c T=1 constant np100 lr=1e-1 f48 1h — most training steps but can't handle 50-step eval (211.59 vs curriculum 202.80)
+none	301.1642	0.7	discard	R56 multi_step_exp (exp-weighted intermediate MSE) np100 lr=1e-1 f48 linear T=1→4 1h — intermediate MSE adds noise (301 vs 203)
+none	202.8004	0.0	done	R55 (other conv) SPSA curriculum T=1→4 np=100 lr=1e-1 f48 1hr — NEW BEST SPSA!
+none	204.5792	0.0	done	R55 (other conv) SPSA curriculum frac=0.8 T=1→4 f48 1hr
+none	204.7009	0.0	done	R55 (other conv) SPSA curriculum frac=0.5 T=1→4 f48 1hr
+none	284.1067	0.7	discard	R56 eps=2e-2 np100 lr=1e-1 f48 T=1→4 1h (larger eps = smoother but less accurate gradients, worse FID)
+none	0.000000	0.0	crash	R56 batch-refresh 25% np100 lr=1e-1 f48 T=1→4 1h (diverged at 68% — batch refresh destabilizes training)
+none	0.000000	0.0	crash	R56 2hr batch-refresh 25% np100 lr=1e-1 f48 T=1→4 (diverged at 22% — same instability)
+none	0.000000	0.0	crash	R56 eps=5e-3 np100 lr=1e-1 f48 T=1→4 1h (diverged at 28% — too small eps, noisy gradients)
+a22e59d	203.5787	0.7	discard	R55 curriculum frac=0.6 T=1→5 np=100 lr=1e-1 f48 1h (T=1→5 close but worse than T=1→4)
+none	308.0814	0.7	discard	R56 curriculum+pert-recycle=5 np100 lr=1e-1 f48 T=1→4 1h — stale perturbation dirs hurt badly (308 vs 202.80)
+a22e59d	208.7974	0.7	discard	R55 curriculum frac=0.55 T=1→4 np=100 lr=1e-1 f48 1h (frac=0.55 too little T=1 time)
+a22e59d	203.1233	0.7	discard	R55 curriculum frac=0.65 T=1→4 np=100 lr=1e-1 f48 1h (close but slightly worse than frac=0.6)
+a22e59d	203.9450	0.7	keep	R55 curriculum frac=0.6 T=1→4 REPRO np=100 lr=1e-1 f48 1h (repro: 203.95 vs original 202.80)
+a22e59d	216.5434	0.7	discard	R55 curriculum frac=0.6 T=1→4 f32 np=100 lr=1e-1 1h (f32 worse than f48)
+none	282.7637	0.7	discard	R56 multi_step uniform (intermediate MSE at each step) np100 lr=1e-1 f48 linear T=1→4 1h — intermediate signals confuse SPSA (283 vs 203)
+none	204.8598	0.7	discard	R56c curriculum frac=0.5 np100 lr=1e-1 f48 T=1→4 1h (204.86 — matches R55's 204.70, confirms frac=0.5 suboptimal)
+none	204.8598	0.7	discard	R56c curriculum frac=0.5 np100 lr=1e-1 f48 T=1→4 1h — closer to frac=0.6 but still worse (204.86 vs 202.80)
+none	202.4489	0.7	done	R56c curriculum frac=0.6 T=1→4 np100 lr=1e-1 f48 2hr — NEW BEST SPSA! (202.45 beats 202.80, longer training HELPS with curriculum T)
+none	230.3036	0.7	discard	R56c curriculum+multistep_loss np100 lr=1e-1 f48 T=1→4 1h — multistep intermediates add noise (230 vs 202.80 plain curriculum)
+none	202.4489	0.7	keep	R56c curriculum frac=0.6 2hr np100 lr=1e-1 f48 T=1→4 — NEW BEST! Longer curriculum training (202.45 vs 202.80 at 1hr)
+none	230.3036	0.7	discard	R56c curriculum+multi_step_exp loss np100 lr=1e-1 f48 T=1→4 1h — multi-step loss hurts even with curriculum (230 vs 203)
+none	204.1237	0.7	discard	R56c curriculum frac=0.7 np100 lr=1e-1 f48 T=1→4 1h (204.12 — between frac=0.65's 203.12 and frac=0.8's 204.58)
+none	204.1237	0.7	discard	R56c curriculum frac=0.7 np100 lr=1e-1 f48 T=1→4 1h — close to 0.6 but worse (204.12 vs 202.80)
+a22e59d	0.000000	0.0	crash	R55 curriculum 2hr frac=0.6 T=1→4 np=100 lr=1e-1 f48 (diverged at 24% - too long at full lr for 2hr)
+none	202.3384	0.7	keep	R56b exp_t schedule T=1→4 np100 lr=0.1 f48 1hr — NEW BEST SPSA! Exponential T ramp beats curriculum 0.6 (202.34 vs 202.80 1hr)
+none	205.0553	0.7	discard	R56b lr=0.075 (vs lr=0.1) — lower LR worse (205.06 vs 202.80)
+none	269.7996	0.7	discard	R56b cyclic T schedule — terrible (269.80), alternating T too unstable for SPSA
+none	202.3384	0.7	NEW_BEST	R56b exponential T schedule (T=1→4) np100 lr=1e-1 f48 1h — NEW BEST SPSA! (exponential > linear)
+none	205.0553	0.7	discard	R56b lr=7.5e-2 np100 f48 linear T=1→4 1h (between 5e-2 and 1e-1, slightly worse)
+none	269.7996	0.7	discard	R56b cyclic T (1→4→1→4) np100 lr=1e-1 f48 1h (cycling confuses training)
+none	203.2562	0.7	contender	R56c curriculum frac=0.55 np100 lr=1e-1 f48 T=1→4 1h — close to optimal (203.26 vs 202.80 at frac=0.6)
+none	203.2562	0.7	discard	R56c curriculum frac=0.55 np100 lr=0.1 f48 T=1→4 1hr (203.26 — worse than frac=0.6's 202.80)
+none	202.3187	0.7	keep	R54 f64 np=50 lr=0.05 linear T 1→4 2hr — NEW BEST\! Different param regime: more images, fewer perts, lower lr
+none	208.5669	0.7	discard	R54 np=25 lr=0.025 f48 linear T 1→4 2hr — too few perturbations, too low lr (208.57)
+a22e59d	203.6997	0.7	keep	R56 curriculum frac=0.6 T=1→4 REPRO #2 np=100 lr=1e-1 f48 1h (avg FID: 203.48)
+a22e59d	0.000000	0.0	crash	R56 phased T=1→4 np=100 lr=1e-1 f48 1h (diverged at 87% - LR restart at T=4 phase unstable)
+none	201.9103	0.7	keep	R56c curriculum frac=0.65 np100 lr=1e-1 f48 T=1→4 1h — NEW ALL-TIME BEST! Slightly longer T=1 phase (201.91 vs 202.80 at frac=0.6)
+none	214.6246	0.7	discard	R57 1.5-SPSA curvature + curriculum frac=0.6 — curvature weighting hurts with curriculum (214.62 vs 202.80)
+none	254.7279	0.7	discard	R57 antithetic + curriculum frac=0.6 — antithetic perturbations terrible (254.73)
+none	207.9674	0.7	discard	R57 curriculum + progressive loss — progressive adds some value over baseline 209 but worse than denoising 202.80
+none	DIVERGED	0.0	discard	R57 curriculum 2hr + batch-trickle-interval=200 — diverged at 18.7%, loss 1.87 (trickle destabilizes like full refresh)
+none	201.9103	0.7	keep	R56c (other conv) curriculum frac=0.65 np100 lr=0.1 f48 T=1→4 1hr — NEW BEST SPSA 201.91! (frac=0.65 beats 0.6)
+a22e59d	0.000000	0.0	crash	R55 curriculum frac=0.6 np=50 lr=5e-2 T=1→4 f48 1h (KILLED at 63% by GPU contention)
+a22e59d	0.000000	0.0	crash	R55 curriculum frac=0.6 warmdown=0.4 T=1→4 f48 1h (KILLED at 62% by GPU contention)
+none	202.4080	0.7	contender	R56d curriculum frac=0.6 T=1→3 np100 lr=1e-1 f48 1h — narrower T range OK (202.41 vs 202.80 with T=1→4)
+none	208.2399	0.7	discard	R57 (other conv) exponential T 1→5 — t_max=5 too many steps (208.24 vs 202.34 for t_max=4)
+none	208.2399	0.7	discard	R57 exponential T=1→5 np100 lr=1e-1 f48 1h (too many max steps)
+none	204.5596	0.7	discard	R57 exponential T=1→3 np100 lr=1e-1 f48 1h (fewer steps = slightly worse)
+none	0.000000	0.0	crash	R57 exp T=1→4 lr=1.5e-1 1h (diverged at 23% — lr too high even with exp schedule)
+none	238.2061	0.7	discard	R56d curriculum+batch-refresh=0.6 np100 lr=1e-1 f48 T=1→4 1h — refreshing fixed batch hurts (238 vs 202)
+none	203.2945	0.7	discard	R56d (other conv) curriculum frac=0.63 — not better than 0.6 or 0.65 (203.29)
+none	202.8921	0.7	keep	R56d (other conv) exp_t repro — confirms exp_t is ~202.3-202.9 range (run variance)
+none	203.1933	0.7	keep	R56d (other conv) curriculum 0.65 repro — 203.19 vs original 201.91, high variance
+none	238.2061	0.7	discard	R56d (other conv) curriculum + batch refresh — refresh diverges as before (238.21)
+none	203.2945	0.7	discard	R56d curriculum frac=0.63 np100 lr=1e-1 f48 T=1→4 1h — between 0.6 and 0.65 (203.29)
+none	203.1933	0.7	contender	R56d curriculum frac=0.65 reproduce np100 lr=1e-1 f48 T=1→4 1h — confirms 0.65 is best (203.19, first run was 201.91)
+none	202.8921	0.7	keep	R56 exponential T=1→4 REPRO #1 np100 lr=1e-1 f48 1hr (202.89 vs original 202.34 — doesn't reproduce perfectly)
+none	206.5642	0.7	discard	R56 exponential T=1→4 REPRO #2 np100 lr=1e-1 f48 1hr (206.56 — high variance, exp T unreliable)
+none	203.2945	0.7	discard	R56d curriculum frac=0.63 np100 lr=1e-1 f48 T=1→4 1hr (203.29 — frac=0.63 slightly worse than 0.65)
+none	203.1933	0.7	keep	R56d curriculum frac=0.65 REPRO np100 lr=1e-1 f48 T=1→4 1hr (203.19 — avg with 201.91: 202.55)
+none	202.4080	0.7	keep	R56d curriculum T=1→3 frac=0.65(?) np100 lr=1e-1 f48 1hr (202.41 — T=3 almost as good as T=4!)
+none	238.2061	0.7	discard	R56d curriculum_refresh (batch refresh during curriculum) — batch refresh kills training (238.21)
+none	206.0336	0.7	discard	R56d curriculum 2hr frac=0.7 np100 lr=1e-1 f48 T=1→4 (206.03 — frac=0.7 suboptimal even with 2hr)
+none	207.8047	0.7	discard	R56d curriculum frac=0.65 T=1→3 np100 lr=1e-1 f48 1h — narrower T range (207.80 vs 201.91 with T=1→4)
+none	206.0336	0.7	discard	R56d curriculum frac=0.7 2hr np100 lr=1e-1 f48 T=1→4 — too much T=1 time even at 2hr (206.03 vs 202.45 at frac=0.6 2hr)
+none	206.0336	0.7	discard	R56d (other conv) curriculum frac=0.7 2hr — frac=0.7 still worse with 2hr (206.03)
+none	207.8047	0.7	discard	R56d (other conv) curriculum 0.65 t_max=3 — too few denoising steps (207.80)
+none	210.6023	0.7	discard	R57 exponential T=1→4 2hr np100 lr=1e-1 f48 (210.60 > 202.34 — overfitting confirmed, 1hr optimal)
+none	202.5701	0.7	keep	R58 curriculum_exp frac=0.65 (exp ramp post-curriculum) np100 lr=1e-1 f48 T=1→4 1hr (202.57 — slight improvement over linear ramp)
+none	202.3118	0.7	keep	R58 curriculum frac=0.67 np100 lr=1e-1 f48 T=1→4 1hr (202.31 — COMPETITIVE with frac=0.65's 201.91, within variance)
+none	206.8968	0.7	discard	R56 curriculum 2hr frac=0.6 lr=7e-2 np100 f48 T=1→4 (206.90 — lower lr worse even with 2hr)
+none	202.3042	0.7	contender	R56d curriculum frac=0.65 T=1→5 np100 lr=1e-1 f48 1h — wider range ok with curriculum (202.30)
+none	203.1556	0.7	contender	R56d curriculum frac=0.65 2hr np100 lr=1e-1 f48 T=1→4 — 2hr doesn't help at frac=0.65 (203.16 vs 201.91 1hr)
+none	212.7999	0.7	discard	R58 f64 np=50 lr=0.05 exponential T 2hr — much worse than linear T (212.80 vs 202.32). Exp_t doesn't suit low-pert/low-lr
+none	226.3322	0.7	discard	R58 f64 np=50 lr=0.05 curriculum frac=0.6 2hr — terrible (226.33). Curriculum bad for low-pert regime
+none	203.5333	0.7	discard	R58 np=100 lr=0.1 exp_t 2hr — worse than 1hr (203.53 vs 202.34). Exp_t doesn't benefit from 2hr
+none	203.1556	0.7	keep	R56d (other conv) curriculum 0.65 2hr — 203.16, no improvement over 1hr (201.91 was lucky)
+none	204.6299	0.7	discard	R58 curriculum frac=0.65 T=1→5 np100 lr=1e-1 f48 1hr (204.63 — wider T range hurts, T=4 optimal)
+none	216.1583	0.7	discard	R58 exponential T=1→4 REPRO #3 (216.16 — confirms exp T highly unreliable, lucky original 202.34)
+none	204.0600	0.7	discard	R58 curriculum_exp frac=0.6 (exp ramp) np100 lr=1e-1 f48 T=1→4 1hr (204.06 — exp ramp not better than linear)
+none	203.5333	0.7	discard	R58 exponential T=1→4 2hr np100 lr=1e-1 f48 (203.53 — exp T still unreliable even with 2hr)
+none	203.1556	0.7	keep	R56d curriculum frac=0.65 2hr np100 lr=1e-1 f48 T=1→4 (203.16 — decent, 2hr doesn't significantly beat 1hr)
+none	248.9363	0.7	discard	R57 curriculum 0.65 np200 f48 T=1→4 1h — 2x perts = 2x slower = fewer steps (249 vs 202)
+none	262.3921	0.7	discard	R57 curriculum 0.65 f96 np100 T=1→4 1h — larger batch = slower = fewer steps (262 vs 202)
+none	200.8244	0.7	keep	R57 curriculum frac=0.6 T=1→4 np100 lr=0.1 f48 3hr — NEW BEST! 200.82 (1hr=202.80, 2hr=202.45, 3hr=200.82). Longer training keeps helping!
+none	229.4414	0.7	discard	R57b exp T warmup=1 step np100 lr=1e-1 f48 1h (warmup matters! 229 vs 202)
+none	229.4414	0.7	discard	R57b (other conv) exp_t with warmup variant — bad (229.44)
+none	212.7999	0.7	discard	R58 f64 np50 lr=5e-2 exp_t 2hr (212.80 — f64 + exp T + fewer perts worse)
+none	226.3322	0.7	discard	R58 f64 np50 lr=5e-2 curriculum 2hr (226.33 — f64 bad with curriculum too)
+none	205.6075	0.7	discard	R57 exponential T schedule np100 lr=1e-1 f48 T=1→4 1h — no clean phase separation (205.61 vs curriculum 201.91)
+none	210.6023	0.7	discard	R57 (other conv) exp_t 2hr variant — 210.60, confirms exp_t 2hr doesn't work
+none	248.9363	0.7	discard	R57 (other conv) curriculum 0.65 np=200 — too many perturbations (248.94)
+none	204.5596	0.7	discard	R57 (other conv) exp_t t_max=3 — too few steps (204.56)
+none	205.6075	0.7	discard	R57 (other conv) exponential schedule 1hr — 205.61
+none	262.3921	0.7	discard	R57 (other conv) curriculum 0.65 f96 — too many fixed images (262.39)
+none	220.7863	0.7	discard	R58b curriculum frac=0.65 T=1→2 np100 lr=1e-1 f48 1hr (220.79 — T=2 max NOT enough, needs T=4)
+none	201.9575	0.7	NEW_BEST	R58b curriculum frac=0.67 REPRO np100 lr=1e-1 f48 T=1→4 1hr (201.96 — confirms frac=0.67 is optimal! avg 202.14)
+none	203.8750	0.7	discard	R58b curriculum frac=0.65 lr=0.11 np100 f48 T=1→4 1hr (203.88 — higher lr slightly worse)
+none	220.7863	0.7	discard	R58b (other conv) curriculum 0.65 t_max=2 — too few steps (220.79)
+none	201.9575	0.7	keep	R58b (other conv) curriculum frac=0.67 1hr — 201.96, competitive (frac=0.65-0.67 sweet spot)
+none	203.8750	0.7	discard	R58b (other conv) curriculum 0.65 lr=0.11 — 203.88, lr=0.1 is better
+none	201.9777	0.7	NEW_BEST	R58b curriculum frac=0.67 lr=0.11 np100 f48 T=1→4 1hr (201.98 — lr=0.11 works well with frac=0.67!)
+none	202.5138	0.7	keep	R58b curriculum frac=0.66 np100 lr=1e-1 f48 T=1→4 1hr (202.51 — between 0.65 and 0.67)
+none	202.5136	0.7	keep	R58b curriculum frac=0.65 REPRO3 np100 lr=1e-1 f48 T=1→4 1hr (202.51 — frac=0.65 avg now 202.54)
+none	229.2022	0.7	discard	R58b curriculum frac=0.65 warmdown=0.25 np100 lr=1e-1 f48 T=1→4 1hr (229.20 — shorter warmdown BAD, 0.3 is optimal)
+none	201.9777	0.7	keep	R58b (other conv) curriculum frac=0.67 lr=0.11 — 201.98, frac=0.67 consistently ~202
+none	229.2022	0.7	discard	R58b (other conv) curriculum 0.65 warmdown=0.25 — different warmdown hurts (229.20)
+none	202.5138	0.7	keep	R58b (other conv) curriculum frac=0.66 1hr — 202.51, frac=0.66 competitive
+none	202.5136	0.7	keep	R58b (other conv) curriculum 0.65 repro3 — 202.51, confirms 0.65 typical range
+none	213.2049	0.7	discard	R56d (other conv) curriculum frac=0.6 4hr — 213.20, surprisingly WORSE than 3hr (200.82). Possible: GPU contention or code version diff
+none	0.000000	0.0	crash	R57b exp T repro FAIL at 64% (exponential schedule can diverge — need stability checks)
+none	208.3721	0.7	discard	R57b exp T f40 np100 lr=1e-1 1h (f40 too few images — 208 vs 202)
+none	233.8696	0.7	discard	R57b exp T f56 np100 lr=1e-1 1h (f56 too many images — 234 vs 202)
+none	213.2049	0.7	discard	R56d curriculum frac=0.6 4hr np100 lr=1e-1 f48 T=1→4 — longer training HURTS (213 vs 203 at 1hr) — overfits T=1 phase
+none	205.0734	0.7	discard	R57 curriculum frac=0.65 2hr (run 2, GPU 1 w/ 3 procs) — contention + variance (205 vs 203 run 1)
+none	0.000000	0.0	crash	R57 curriculum 0.65 f32 np100 f48 T=1→4 1h — killed/crashed at 27.6%
+none	0.000000	0.0	crash	R57 curriculum 0.65 np50 f48 T=1→4 1h — killed/crashed at 21.6%
+none	0.000000	0.0	crash	R57 curriculum 0.65 lr=0.12 f48 T=1→4 1h — diverged at 35.8%, loss 1.56 (lr too high)
+none	225.1500	0.7	discard	R57 curriculum 0.65 T=1→2 — only 2 ODE steps max, not enough quality
+none	202.3118	0.7	keep	R58 curriculum frac=0.67 T=1→4 — frac=0.67 competitive with 0.65
+none	202.5701	0.7	keep	R58 curriculum_exp frac=0.65 T=1→4 — exponential ramp slightly worse than linear
+none	204.0600	0.7	discard	R58 curriculum_exp frac=0.6 T=1→4 — exp ramp at 0.6 worse than linear
+none	204.6299	0.7	discard	R58 curriculum 0.65 T=1→5 — T_max=5 worse than 4
+none	216.1583	0.7	discard	R58 exponential T frac=0.65 — pure exponential ramp bad (no curriculum phase)
+none	212.7999	0.7	discard	R58 f64 np50 exp_t 2hr — fewer perts + GPU contention
+none	226.3322	0.7	discard	R58 f64 np50 curriculum 2hr — GPU contention, terrible result
+none	203.5333	0.7	keep	R58 exponential T 2hr — decent but curriculum still better
+none	201.9777	0.7	keep	R58b curriculum 0.67 lr=0.11 T=1→4 — new best-tie! lr=0.11 works at frac=0.67
+none	201.9575	0.7	BEST	R58b curriculum 0.67 repro T=1→4 — new best-tie at frac=0.67!
+none	202.5138	0.7	keep	R58b curriculum 0.66 T=1→4 — frac=0.66 slightly worse
+none	202.5136	0.7	keep	R58b curriculum 0.65 repro3 T=1→4 — consistent ~202.5 for frac=0.65
+none	203.8750	0.7	discard	R58b curriculum 0.65 lr=0.11 T=1→4 — lr=0.11 at frac=0.65 slightly worse
+none	229.2022	0.7	discard	R58b curriculum 0.65 warmdown=0.25 — shorter warmdown terrible!
+none	220.7863	0.7	discard	R58b curriculum 0.65 T=1→2 — T_max=2 still bad (different from R57 T=1→2)
+none	205.0734	0.7	discard	R57 (other conv) curriculum 0.65 2hr — 205.07, frac=0.65 2hr doesn't help like frac=0.6 2hr does
+none	208.3721	0.7	discard	R57b (other conv) exp_t f40 — 208.37, smaller fixed batch hurts
+none	225.1511	0.7	discard	R57 (other conv) curriculum 0.65 t_max=2 — 225.15, too few steps
+none	233.8696	0.7	discard	R57b (other conv) exp_t f56 — 233.87, f56 doesn't work
+none	201.6936	0.7	BEST	R58c curriculum 0.67 warmdown=0.25 T=1→4 — NEW BEST! warmdown=0.25 works at frac=0.67
+none	202.5143	0.7	keep	R58c curriculum_exp 0.67 T=1→4 — exp ramp same as linear
+none	203.0431	0.7	keep	R58c curriculum frac=0.68 T=1→4 — frac=0.68 slightly worse than 0.67
+none	218.1365	0.7	discard	R57c exponential T repro2 — high variance, GPU contention
+none	208.7748	0.7	discard	R57c exponential T repro3 — exponential T has high run-to-run variance
+none	213.7669	0.7	discard	R57c linear T repro — linear schedule consistently ~209-214
+none	202.5143	0.7	discard	R58c curriculum_exp frac=0.67 (exp ramp) np100 lr=1e-1 f48 T=1→4 1hr (202.51 — exp ramp not better)
+none	203.0431	0.7	discard	R58c curriculum frac=0.68 np100 lr=1e-1 f48 T=1→4 1hr (203.04 — 0.67 confirmed as optimal frac)
+none	201.6936	0.7	NEW_BEST	R58c curriculum frac=0.67 warmdown=0.25 np100 lr=1e-1 f48 T=1→4 1hr — NEW BEST!! First sub-201.9 result!
+none	202.5143	0.7	keep	R58c (other conv) curriculum exp_t frac=0.67 — 202.51
+none	203.0431	0.7	keep	R58c (other conv) curriculum frac=0.68 — 203.04, frac=0.68 slightly worse
+none	201.6936	0.7	keep	R58c (other conv) curriculum 0.67 warmdown=0.25 1hr — 201.69 NEW 1HR BEST! Warmer LR at end helps
+none	218.1365	0.7	discard	R57c exp T repro #2 np100 lr=1e-1 f48 1h (218 — high variance, exp not reliably better)
+none	208.7748	0.7	discard	R57c exp T repro #3 np100 lr=1e-1 f48 1h (209 — variance check)
+none	213.7669	0.7	discard	R57c linear T repro np100 lr=1e-1 f48 1h (214 — linear also varies 203-214)
+none	0.000000	0.0	crash	R57c exp T + multires MSE np100 lr=1e-1 f48 1h (diverged at 21% — multires unstable with exp T)
+none	206.9414	0.7	discard	R58c curriculum frac=0.67 lr=0.11 REPRO (206.94 — lr=0.11 unreliable, first run was lucky 201.98)
+none	201.6342	0.7	NEW_BEST	R58c curriculum frac=0.67 lr=0.105 np100 f48 T=1→4 1hr — NEW BEST!! (201.63 — lr=0.105 beats 0.1!)
+none	203.2880	0.7	discard	R58c curriculum frac=0.67 warmdown=0.35 np100 lr=1e-1 f48 T=1→4 1hr (203.29 — 0.35 worse than 0.3 default)
+none	206.9414	0.7	discard	R58c (other conv) curriculum 0.67 lr=0.11 repro — 206.94, lr=0.11 too high
+none	201.6342	0.7	keep	R58c (other conv) curriculum 0.67 lr=0.105 1hr — 201.63 NEW 1HR BEST! Slightly higher lr helps
+none	203.2880	0.7	discard	R58c (other conv) curriculum 0.67 warmdown=0.35 — more warmdown worse (203.29)
+none	201.6342	0.7	BEST	R58c curriculum 0.67 lr=0.105 T=1→4 — NEW BEST! lr=0.105 slightly better?
+none	206.9414	0.7	discard	R58c curriculum 0.67 lr=0.11 repro — GPU contention hurt this run
+none	203.2880	0.7	discard	R58c curriculum 0.67 warmdown=0.35 — warmdown=0.35 worse than 0.25 or 0.30
+none	210.2615	0.7	discard	R59b curriculum_step frac=0.65 T=1 then JUMP to T=4 — step function worse than linear ramp
+none	210.6687	0.7	discard	R59b curriculum_step frac=0.67 T=1 then JUMP to T=4 — step function bad, linear ramp needed
+none	227.9464	0.7	discard	R59b curriculum_mix frac=0.65 random T∈{1,4} — mixing T=1/T=4 randomly terrible
+none	215.2355	0.7	discard	R59b curriculum_mix frac=0.67 random T∈{1,4} — mixing slightly less bad at 0.67 but still terrible
+none	225.2034	0.7	discard	R59b antithetic perturbations curriculum 0.67 — antithetic hurts, consistently higher loss
+none	203.5178	0.7	discard	R59 curriculum frac=0.67 warmdown=0.25 REPRO (203.52 — 201.69 was lucky, avg now 202.61)
+none	208.5393	0.7	discard	R59 curriculum frac=0.67 warmdown=0.20 (208.54 — too aggressive warmdown)
+none	211.9693	0.7	discard	R59 curriculum frac=0.67 lr=0.11 warmdown=0.25 (211.97 — combining lr+warmdown changes = BAD)
+none	205.9279	0.7	discard	R59 curriculum frac=0.67 warmup=0.05 warmdown=0.25 (205.93 — less warmup hurts)
+none	315.0668	0.7	discard	R58 exp T + pert-recycle=10 np100 lr=1e-1 f48 1h (recycling perturbations = biased gradient = terrible)
+none	209.3498	0.7	discard	R59b repro of curriculum 0.67 warmdown=0.25 — 209.35, confirms 201.69 was lucky (±8 FID variance!)
+none	203.5178	0.7	keep	R59 (other conv) best repro — 203.52, typical range
+none	208.5393	0.7	discard	R59 (other conv) warmdown=0.20 — 208.54, shorter warmdown hurts
+none	211.9693	0.7	discard	R59 (other conv) lr=0.11 warmdown=0.25 — 211.97, both changes hurt
+none	205.9279	0.7	discard	R59 (other conv) warmup=0.05 — 205.93
+none	213.2049	0.7	discard	R56d curriculum 4hr frac=0.65 np100 lr=1e-1 f48 T=1→4 (213.20 — 4hr massively overfits fixed batch)
+none	309.3128	0.7	discard	R59b epsilon cosine decay (eps_max=5e-2→1e-2) with curriculum 0.67 — large epsilon destroys training
+none	202.1829	0.7	keep	R60 curriculum 0.67 warmdown=0.25 repro — 202.18 vs 201.69 original, high variance
+none	204.3934	0.7	discard	R60 curriculum 0.67 warmdown=0.20 — too aggressive warmdown reduction
+none	205.9458	0.7	discard	R59 f64 np=50 lr=0.05 linear T 3hr — 205.95, WORSE than 2hr (202.32). Only curriculum benefits from longer training
+none	202.1829	0.7	keep	R60 (other conv) curriculum 0.67 wd=0.25 repro — 202.18 (vs 201.69/209.35 prev)
+none	204.3934	0.7	discard	R60 (other conv) curriculum 0.67 wd=0.20 — 204.39
+none	210.2615	0.7	discard	R59b (other conv) curriculum_step 0.65 — 210.26
+none	210.6687	0.7	discard	R59b (other conv) curriculum_step 0.67 — 210.67
+none	309.3128	0.7	discard	R59b (other conv) curriculum 0.67 eps_decay — 309.31 terrible
+none	203.4440	0.7	discard	R60 (other conv) c067 wd=0.15 — 203.44
+none	203.5982	0.7	discard	R60 (other conv) c067 wd=0.25 lr=0.11 — 203.60
+none	212.7016	0.7	discard	R60 (other conv) c065 wd=0.25 — 212.70, frac=0.65+wd=0.25 bad
+none	DIVERGED	0.0	discard	R59b curriculum 0.67 warmdown=0.20 3hr — DIVERGED at 19.4%, loss 1.65
+none	203.4440	0.7	discard	R60 curriculum 0.67 warmdown=0.15 — too aggressive warmdown
+none	203.5982	0.7	discard	R60 curriculum 0.67 warmdown=0.25 lr=0.11 — lr=0.11 with wd=0.25 not better
+none	212.7016	0.7	discard	R60 curriculum 0.65 warmdown=0.25 — wd=0.25 BAD at frac=0.65 (only works at 0.67)
+none	205.9458	0.7	discard	R59 f64 linear 3hr — linear schedule still can't beat curriculum
+none	207.0273	0.7	discard	R60 curriculum_exp frac=0.67 np100 lr=1e-1 f48 1h (curriculum+exp ramp worse than plain curriculum)
+none	204.0501	0.7	discard	R60 curriculum frac=0.70 np100 lr=1e-1 f48 1h (0.70 slightly worse than 0.67)
+none	206.1828	0.7	discard	R60 curriculum frac=0.67 warmdown=0.20 np100 lr=1e-1 f48 1h (warmdown 0.20 worse than 0.25)
+none	204.4152	0.7	contender	R60 curriculum frac=0.67 (repro) np100 lr=1e-1 f48 1h (consistent ~204)
+none	202.4476	0.7	contender	R60 curriculum frac=0.67 warmdown=0.25 np100 lr=1e-1 f48 1h (202.4 — ties best configs)
+none	208.0829	0.7	discard	R59b lr=0.105 frac=0.67 REPRO1 (208.08 — doesn't match 201.63, high variance at lr=0.105)
+none	203.3840	0.7	keep	R59b lr=0.105 frac=0.67 REPRO2 (203.38 — lr=0.105 avg: (201.63+208.08+203.38)/3=204.36, unreliable)
+none	317.1741	0.7	discard	R59b np=120 frac=0.67 (CORRUPTED — model didn't learn, possible train.py file contention)
+none	316.8726	0.7	discard	R59b np=80 frac=0.67 (CORRUPTED — model didn't learn, possible train.py file contention)
+none	316.8293	0.7	discard	R59b frac=0.67 repro3 (CORRUPTED — model didn't learn, possible train.py file contention)
+none	202.9012	0.7	keep	R60 curriculum_step 0.67 warmdown=0.25 — step+warmdown=0.25 decent but linear ramp still better
+none	204.3341	0.7	discard	R61 ssim_mse_light + curriculum 0.67 — SSIM adds noise to gradient, slightly worse than pure MSE
+none	302.7449	0.7	discard	R61 denoising_huber + curriculum 0.67 — Huber L1 region bad for SPSA (constant gradient magnitude)
+none	202.9395	0.7	keep	R59 curriculum frac=0.6 4hr — 202.94, WORSE than 3hr (200.82). Possible overfitting at 19k steps/48 images
+none	207.8113	0.7	discard	R61 denoising_cosine_steps + curriculum 0.67 — cosine ODE spacing worse with only 4 steps
+none	234.9300	0.7	discard	R61 denoising_midpoint + curriculum 0.67 — 2× slower steps = 2× fewer updates, much worse
+none	270.1841	0.7	discard	R61 denoising_heun + curriculum 0.67 — 2× slower, Heun harder for SPSA to optimize
+none	206.1805	0.7	discard	R61 variance test run1: curriculum 0.67 warmdown=0.25 np100 lr=1e-1 f48 1h
+none	202.4127	0.7	contender	R61 variance test run2: curriculum 0.67 warmdown=0.25 np100 lr=1e-1 f48 1h
+none	207.6730	0.7	discard	R61 variance test run3: curriculum 0.67 warmdown=0.25 np100 lr=1e-1 f48 1h
+none	203.4509	0.7	contender	R61 variance test run4: curriculum 0.67 warmdown=0.25 np100 lr=1e-1 f48 1h
+none	204.7190	0.7	contender	R61 variance test run5: curriculum 0.67 warmdown=0.25 np100 lr=1e-1 f48 1h
+none	292.1112	0.7	discard	R61 denoising_logmse + curriculum 0.67 — log(MSE) gradient signal wrong for SPSA
+none	206.1805	0.7	keep	R61 best_run1 repro (curriculum 0.67 clean GPU) — variance test
+none	202.4127	0.7	keep	R61 best_run2 repro (curriculum 0.67 clean GPU) — variance test
+none	207.6730	0.7	keep	R61 best_run3 repro (curriculum 0.67 clean GPU) — variance test
+none	203.4509	0.7	keep	R61 best_run4 repro (curriculum 0.67 clean GPU) — variance test
+none	204.7190	0.7	keep	R61 best_run5 repro (curriculum 0.67 clean GPU) — variance test MEAN=204.9 STD=2.0
+none	227.4445	0.7	discard	R59b curriculum 0.67 wd=0.25 3hr — 227.44, warmdown=0.25 terrible at 3hr
+none	204.7333	0.7	discard	R59b curriculum 0.60 wd=0.25 3hr — 204.73, warmdown=0.25 worse than default 0.30 (200.82)
+none	206.1805	0.7	keep	R61 (other conv) best_run1 1hr repro — 206.18
+none	202.4127	0.7	keep	R61 (other conv) best_run2 1hr repro — 202.41
+none	207.6730	0.7	keep	R61 (other conv) best_run3 1hr repro — 207.67
+none	203.4509	0.7	keep	R61 (other conv) best_run4 1hr repro — 203.45
+none	204.7190	0.7	keep	R61 (other conv) best_run5 1hr repro — 204.72
+71ebc31	206.5891	0.7	discard	R60 curriculum frac=0.67 clean repro (206.59 — high variance, avg now ~203.8)
+71ebc31	202.0877	0.7	keep	R60 lr=0.105 frac=0.67 clean repro (202.09 — good, lr=0.105 avg ~203.8)
+none	DIVERGED	0.0	discard	R60 curriculum 0.6 3hr repro — DIVERGED at 17.7%! 3/4 experiments diverged. np=100 is unstable at 3hr
+none	DIVERGED	0.0	discard	R60 curriculum 0.6 3hr repro2 — DIVERGED (loss=10.16)
+none	DIVERGED	0.0	discard	R60 curriculum 0.67 3hr — DIVERGED (loss=3.14)
+none	212.8413	0.7	discard	R62 n_embd=96 curriculum 0.67 — too few parameters, capacity loss > gradient quality gain
+none	235.2533	0.7	discard	R62 n_embd=64 curriculum 0.67 — far too small, can't represent data
+none	0.000000	0.0	crash	R62 lowres MSE (2× downscale) curriculum 0.67 1h (diverged at 24% — too smooth for SPSA)
+none	206.0805	0.7	discard	R62 MAE (L1) loss curriculum 0.67 warmdown=0.25 1h (L1 slightly worse than L2/MSE)
+none	205.3788	0.7	discard	R62 curriculum frac=0.65 warmdown=0.25 1h (0.65 slightly worse than 0.67)
+none	206.1024	0.7	discard	R62 n_perts=150 curriculum 0.67 warmdown=0.25 1h (more perts = slower, not better)
+none	202.8259	0.7	keep	R62 spsa-grad-clip=1.0 curriculum 0.67 — within noise range, possibly slight help
+none	203.7390	0.7	keep	R62 spsa-grad-clip=0.5 curriculum 0.67 — within noise range
+none	327.0630	0.7	discard	R62 multi-noise curriculum 0.67 — different noise per pert corrupts gradient signal
+none	328.8769	0.7	discard	R62 vary-noise curriculum 0.67 — same issue, noise variance drowns perturbation signal
+none	206.1024	0.7	discard	R62 np=150 curriculum 0.67 — fewer steps from more perts, net negative
+none	206.0805	0.7	keep	R62 MAE loss curriculum 0.67 — slightly worse than MSE (other session)
+none	205.3788	0.7	keep	R62 curriculum 0.65 clean repro — confirms ~205 expected for frac=0.65
+71ebc31	204.2187	0.7	discard	R61 SWA 10% (avg 311 checkpoints) curriculum frac=0.67 1hr (204.22 — SWA doesn't help)
+71ebc31	204.1719	0.7	discard	R61 SWA 20% (avg 660 checkpoints) curriculum frac=0.67 1hr (204.17 — SWA doesn't help)
+71ebc31	317.1420	0.7	discard	R61 SWA 10% + warmdown=0.25 (CORRUPTED — model didn't learn)
+none	290.1029	0.7	discard	R63 n_embd=192 depth=2 curriculum 0.67 wd=0.25 1h (wider = more params = fewer effective steps = worse)
+none	209.1989	0.7	discard	R63 n_embd=96 depth=2 curriculum 0.67 wd=0.25 1h (narrower = less capacity)
+none	223.4493	0.7	discard	R63 depth=1 n_embd=128 curriculum 0.67 wd=0.25 1h (too shallow)
+none	238.4234	0.7	discard	R63 depth=3 n_embd=96 curriculum 0.67 wd=0.25 1h (deeper+narrower not better)
+none	322.0450	0.7	discard	R63 patch=4 depth=1 n_embd=64 curriculum 0.67 wd=0.25 1h (tiny model fails)
+none	204.4957	0.7	keep	R63 fixed-batch=32 curriculum 0.67 — same as f48, batch size ≥32 doesn't matter
+none	221.6678	0.7	discard	R63 fixed-batch=64 curriculum 0.67 — more images = less overfitting = worse FID
+none	239.9706	0.7	discard	R63 fixed-batch=96 curriculum 0.67 — way too many images, can't overfit enough
+none	290.1029	0.7	discard	R63 n_embd=192 curriculum 0.67 — too many params for SPSA (other session)
+none	209.1989	0.7	discard	R63 n_embd=96 curriculum 0.67 repro — confirms 213 range (other session)
+none	223.4493	0.7	discard	R63 depth=1 curriculum 0.67 — too shallow despite fast steps (other session)
+none	238.4234	0.7	discard	R63 depth=3 n_embd=96 curriculum 0.67 — wrong config for SPSA (other session)
+none	322.0450	0.7	discard	R63 patch=4 depth=1 n_embd=64 curriculum 0.67 — low training loss but terrible FID (other session)
+none	203.9540	0.7	keep	R63 fixed-batch=24 curriculum 0.67 — fewer images slightly better?! within noise though
+none	205.9724	0.7	keep	R63 gradclip=1.0 repro curriculum 0.67 — within noise range (was 202.83, now 205.97)
+none	208.9691	0.7	discard	R63 f32+gradclip=1.0 curriculum 0.67 — combo not helpful
+71ebc31	202.3926	0.7	keep	R62 mlp_ratio=2 curriculum frac=0.67 np100 lr=1e-1 f48 T=1→4 1hr (202.39 — competitive with 15% fewer params)
+none	201.2790	0.7	keep	R60 curriculum frac=0.6 3hr np=150 — 201.28! 2nd best ever. np=150 is stable (no divergence) and competitive
+71ebc31	207.5681	0.7	discard	R63 synced warmdown=0.33 curriculum frac=0.67 (207.57 — synced warmdown doesn't help)
+71ebc31	204.1604	0.7	discard	R63 synced warmdown=0.33 REPRO (204.16 — avg 205.87, worse than default 0.3)
+71ebc31	204.3932	0.7	discard	R63 grad_clip=1.0 curriculum frac=0.67 (204.39)
+71ebc31	209.1857	0.7	discard	R63 grad_clip=1.0 REPRO (209.19 — high variance, avg 206.79)
+71ebc31	204.4203	0.7	discard	R63 synced_wd=0.33 + grad_clip=1.0 (204.42 — combo doesn't help)
+71ebc31	207.7670	0.7	discard	R63 mlp_ratio=3 curriculum frac=0.67 (207.77 — worse than both 2 and 4)
+none	203.4410	0.7	contender	R64 lottery run1: curriculum 0.67 warmdown=0.25 (10-run variance test)
+none	239.3501	0.7	discard	R64 lottery run2: curriculum 0.67 warmdown=0.25 (OUTLIER — shows high variance)
+none	208.5816	0.7	discard	R64 lottery run3: curriculum 0.67 warmdown=0.25
+none	202.6955	0.7	contender	R64 lottery run4: curriculum 0.67 warmdown=0.25
+none	206.7876	0.7	discard	R64 lottery run5: curriculum 0.67 warmdown=0.25
+none	216.6633	0.7	discard	R64 fixed-batch=16 curriculum 0.67 — too few images, not enough diversity for generalization
+none	218.1914	0.7	discard	R64 fixed-batch=8 curriculum 0.67 — extreme overfitting, model learns only 8 images
+none	203.4410	0.7	keep	R64 lottery_run1 (curriculum 0.67, clean GPU) — variance test
+none	239.3501	0.7	discard	R64 lottery_run2 — outlier, likely GPU contention
+none	208.5816	0.7	keep	R64 lottery_run3 — variance test
+none	202.6955	0.7	keep	R64 lottery_run4 — variance test, good run
+none	206.7876	0.7	keep	R64 lottery_run5 — variance test
+none	203.6303	0.7	keep	R61 curriculum 0.6 3hr np=150 repro — 203.63 (heavy contention, 18 img/sec). Clean GPU got 201.28
+none	211.0702	0.7	discard	R61 curriculum 0.6 3hr np=200 — 211.07, too many perts (6846 steps vs 10175 for np=150)
+none	203.6206	0.7	keep	R61 curriculum 0.6 3hr np=100 gradclip=1.0 — 203.62, gradclip prevents divergence! (with contention)
+none	205.2133	0.7	keep	R64 f24 repro curriculum 0.67 — confirms f24 is within noise range (first run was 203.95)
+none	203.3391	0.7	keep	R64 freeze label_embed curriculum 0.67 — freezing labels reduces SPSA dim, possibly helps
+none	208.8284	0.7	discard	R64 freeze label_embed+time_embed curriculum 0.67 — freezing conditioning too aggressively hurts
+none	204.9101	0.7	keep	R64 freeze blocks.0 curriculum 0.67 — freezing first transformer block, neutral result
+71ebc31	206.5972	0.7	discard	R64 f24 curriculum frac=0.67 (206.60 — fewer fixed images worse)
+71ebc31	212.5158	0.7	discard	R64 f32 curriculum frac=0.67 (212.52 — f32 with curriculum worse than f48)
+71ebc31	215.8155	0.7	discard	R64 f24 repro (215.82 — f24 unreliable)
+71ebc31	207.8595	0.7	discard	R64 mlp_ratio=2 repro (207.86 — doesn't reproduce 202.39)
+71ebc31	204.5856	0.7	discard	R64 f24 + mlp_ratio=2 (204.59 — combo not better)
+71ebc31	206.6827	0.7	discard	R64 baseline repro curriculum frac=0.67 f48 (206.68)
+none	241.5915	0.7	discard	R65 45min budget curriculum 0.67 wd=0.25 (too short for curriculum to ramp)
+none	209.8634	0.7	discard	R65 50min budget curriculum 0.67 wd=0.25 (still too short)
+none	200.2664	0.7	NEW_BEST	R65 warmdown=0.15 curriculum 0.67 np100 lr=1e-1 f48 1h — NEW ALL-TIME BEST SPSA! (keep peak LR longer!)
+none	203.0938	0.7	contender	R65 warmdown=0.35 curriculum 0.67 np100 lr=1e-1 f48 1h (standard)
+none	206.5972	0.7	keep	R64 f24 run2 curriculum 0.67 — f24 high variance (other session)
+none	212.5158	0.7	discard	R64 f32 run2 curriculum 0.67 — GPU contention (other session)
+none	215.8155	0.7	discard	R64 f24 repro3 curriculum 0.67 — f24 NOT consistently better, high variance
+none	207.8595	0.7	keep	R64 mlp_ratio=2 curriculum 0.67 — slightly worse (other session)
+none	204.5856	0.7	keep	R64 f24+mlp_ratio=2 curriculum 0.67 — decent combo (other session)
+none	206.6827	0.7	keep	R64 baseline repro curriculum 0.67 — confirms ~205-207 expected (other session)
+r65_g2_90min	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_90min	204.41	90min budget, overfits slightly
+none	200.2664	0.7	BEST	R65 curriculum 0.67 warmdown=0.15 — NEW BEST! (but likely lucky run, previous wd=0.15 was 203.44)
+none	241.5915	0.7	discard	R65 45min budget curriculum 0.67 — not enough training time (other session)
+none	209.8634	0.7	discard	R65 50min budget curriculum 0.67 — not enough training time (other session)
+none	204.4062	0.7	keep	R65 90min budget curriculum 0.67 — similar to 60min (other session)
+none	203.0938	0.7	keep	R65 warmdown=0.35 curriculum 0.67 — (other session)
+71ebc31	200.2664	0.7	NEW_BEST	R65 warmdown=0.15 curriculum frac=0.67 np100 lr=1e-1 f48 T=1→4 1hr — NEW ALL-TIME BEST! First sub-201!
+71ebc31	204.4062	0.7	discard	R65 90min curriculum frac=0.67 (204.41 — 90min ok but not better than 1hr)
+71ebc31	203.0938	0.7	discard	R65 warmdown=0.35 curriculum frac=0.67 (203.09 — worse than 0.3)
+none	200.2664	0.7	keep	R65 (other conv) curriculum warmdown=0.15 1hr — 200.27! But could be 1hr variance (±4-8 FID)
+none	203.0938	0.7	keep	R65 (other conv) curriculum warmdown=0.35 1hr — 203.09
+none	204.4062	0.7	keep	R65 (other conv) curriculum 90min — 204.41
+71ebc31	206.0733	0.7	discard	seed=2 curriculum frac=0.67 warmdown=0.3 — worse FID from different init
+71ebc31	205.6539	0.7	discard	seed=4 curriculum frac=0.67 warmdown=0.3 — worse FID from different init
+71ebc31	0.0000	0.0	crash	seed=1 curriculum frac=0.67 warmdown=0.3 — DIVERGED at 25% (loss 1.33→3.24)
+71ebc31	0.0000	0.0	crash	seed=3 curriculum frac=0.67 warmdown=0.3 — DIVERGED at 51% (loss 1.20→4.46)
+71ebc31	202.9563	0.7	discard	SWA 10% frac=0.67 wd=0.3 — SWA doesn't help
+71ebc31	203.1958	0.7	discard	SWA 20% frac=0.67 wd=0.3 — SWA doesn't help
+71ebc31	208.8542	0.7	discard	SWA 30% frac=0.67 wd=0.3 — too much averaging hurts badly
+71ebc31	205.4555	0.7	discard	freeze_labels + SWA 10% frac=0.67 — freeze labels hurts
+71ebc31	205.1945	0.7	discard	freeze_labels repro frac=0.67 — confirms freeze labels hurts
+71ebc31	204.6976	0.7	discard	freeze_labels f24 frac=0.67 — freeze labels with smaller batch
+none	202.9563	0.7	keep	R65 SWA=0.1 curriculum 0.67 — SWA averaging helps! avg last 10% of weights
+none	203.1958	0.7	keep	R65 SWA=0.2 curriculum 0.67 — SWA with 20% also good
+none	208.8542	0.7	discard	R65 SWA=0.3 curriculum 0.67 — too much averaging includes noisy weights
+none	205.4555	0.7	keep	R65 freeze_labels + SWA=0.1 curriculum 0.67 — combo not clearly better
+none	205.1945	0.7	keep	R65 freeze_labels repro curriculum 0.67 — first run (203.34) was lucky
+none	204.6976	0.7	keep	R65 freeze_labels + f24 curriculum 0.67 — decent combo
+r65_g0_swa01	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_swa01	202.96	SWA frac=0.1
+r65_g1_swa02	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_swa02	203.20	SWA frac=0.2
+r65_g2_swa03	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_swa03	208.85	SWA frac=0.3 — too much averaging
+r65_g3_freeze_labels_swa01	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_freeze_labels_swa01	205.46	freeze labels + SWA 0.1
+r65_g4_freeze_labels_repro	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_freeze_labels	205.19	freeze labels repro
+r65_g5_freeze_labels_f24	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd025_freeze_labels_f24	204.70	freeze labels f24
+none	205.8874	0.7	discard	R62 curriculum 0.6 3hr np=150 lr=0.12 — 205.89, higher lr hurts with np=150
+71ebc31	200.9188	0.7	keep	warmdown=0.15 repro1 frac=0.67 — confirms wd015 improvement! avg of 3: 201.61
+71ebc31	203.6516	0.7	discard	warmdown=0.15 repro2 frac=0.67 — high variance but avg still good
+71ebc31	241.2696	0.7	discard	warmdown=0.10 frac=0.67 — WAY too little warmdown! Model diverges at end
+r66_g0_wd015_repro1	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	200.92	warmdown=0.15 REPRO — confirms sub-201!
+r66_g6_wd010	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd010	241.27	warmdown=0.10 — TOO AGGRESSIVE
+r66_g7_wd015_repro2	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	203.65	warmdown=0.15 repro2
+r67_g2_wd005	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd005	200.80	warmdown=0.05 — 3rd sub-201!
+71ebc31	200.8037	0.7	keep	warmdown=0.05 frac=0.67 — very aggressive! Only 5% warmdown works? Needs repro
+none	200.9188	0.7	BEST	R66 warmdown=0.15 repro1 curriculum 0.67 — confirms wd=0.15 is genuinely better! mean~202
+none	203.6516	0.7	keep	R66 warmdown=0.15 repro2 curriculum 0.67 — another wd=0.15 data point
+none	241.2696	0.7	discard	R66 warmdown=0.10 curriculum 0.67 — too aggressive, LR drops too fast (other session)
+none	206.0733	0.7	keep	R65 seed2 repro — variance test (other session)
+none	205.6539	0.7	keep	R65 seed4 repro — variance test (other session)
+57a43ec	322.2107	0.7	discard	denoising_edge wd015 frac=0.67 — gradient-domain loss TERRIBLE for SPSA
+57a43ec	322.4769	0.7	discard	denoising_edge wd015 frac=0.67 repro — confirms edge loss is bad
+57a43ec	213.4821	0.7	discard	denoising_tv wd015 frac=0.67 — TV regularization also hurts SPSA
+57a43ec	206.7648	0.7	discard	denoising_mae wd015 frac=0.67 — L1 loss slightly worse than L2
+57a43ec	245.0190	0.7	discard	denoising+guard wd015 frac=0.67 — GPU contention (shared GPU with edge)
+57a43ec	321.2742	0.7	discard	denoising_edge+guard wd015 frac=0.67 — edge loss bad regardless of guard
+57a43ec	205.2939	0.7	discard	denoising_mae+guard wd015 frac=0.67 — MAE OK but not better than MSE
+none	204.1479	0.7	keep	R62b curriculum 0.6 3hr np=150 (contended GPU) — 204.15 (np=150 3hr range: 201.28-204.15)
+none	220.9688	0.7	discard	R62b curriculum 0.6 3hr gradclip=1.0 (contended GPU) — 220.97, bad
+none	208.7361	0.7	discard	R66 SWA=0.1+warmdown=0.15 curriculum 0.67 — SWA window overlaps with warmdown, hurts
+none	202.7890	0.7	keep	R66 SWA=0.1+warmdown=0.20 curriculum 0.67 — decent combo
+none	203.8412	0.7	keep	R66 SWA=0.1+warmdown=0.25 curriculum 0.67 — decent
+none	200.8037	0.7	keep	R67 (other conv) curriculum warmdown=0.05 1hr — 200.80! Minimal LR decay helps (but 1hr variance)
+none	200.9188	0.7	keep	R66 (other conv) curriculum warmdown=0.15 repro — 200.92
+none	208.8354	0.7	discard	R66 SWA=0.1 repro curriculum 0.67 — SWA inconsistent (202.96 vs 208.84)
+none	204.1088	0.7	keep	R66 SWA=0.1 repro2 curriculum 0.67 — SWA within noise range
+none	208.1520	0.7	discard	R66 SWA=0.15 curriculum 0.67 — SWA does not consistently help
+none	202.9709	0.7	keep	R66 warmdown=0.15 repro3 curriculum 0.67 — wd=0.15 consistently better! mean~202.3
+80bf9ae	220.9688	0.7	discard	3hr curriculum=0.60 gradclip=1 — longer training + gc doesn't help
+80bf9ae	204.1479	0.7	discard	3hr curriculum=0.60 np150 — 3hr not better than 1hr best
+71ebc31	203.8412	0.7	discard	SWA 10% + wd025 — SWA still doesn't help
+71ebc31	208.8354	0.7	discard	SWA 10% repro — worse, confirms SWA bad
+71ebc31	204.1088	0.7	discard	SWA 10% repro2 — SWA mediocre
+71ebc31	208.1520	0.7	discard	SWA 15% — bad
+71ebc31	202.9709	0.7	keep	warmdown=0.15 repro (other conv) — confirms wd015 real: avg of 5 = 202.25
+r69_g0_wd010_repro	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd010	203.10	warmdown=0.10 repro — first run 241 was outlier
+80bf9ae	246.7064	0.7	crash	INVALID: wd005 repro — used teacher loss not denoising (missing --spsa-loss-type)
+80bf9ae	246.4447	0.7	crash	INVALID: wd005 repro2 — used teacher loss not denoising
+80bf9ae	245.7062	0.7	crash	INVALID: wd010 repro — used teacher loss not denoising
+80bf9ae	244.6222	0.7	crash	INVALID: wd012 — used teacher loss not denoising
+80bf9ae	244.5983	0.7	crash	INVALID: wd018 — used teacher loss not denoising
+80bf9ae	244.6941	0.7	crash	INVALID: wd015+guard — used teacher loss not denoising
+80bf9ae	246.5985	0.7	crash	INVALID: wd005+guard — used teacher loss not denoising
+80bf9ae	322.5061	0.7	discard	denoising_edge wd015 frac=0.67 — edge loss is terrible (confirms R68)
+none	246.7064	0.7	discard	R69 (other conv) wd=0.05 repro — 246.71! Confirms 200.80 was extreme outlier. wd=0.05 is BAD
+none	246.4447	0.7	discard	R69 (other conv) wd=0.05 repro2 — 246.44
+none	245.7062	0.7	discard	R69 (other conv) wd=0.10 repro — 245.71
+none	244.6222	0.7	discard	R69 (other conv) wd=0.12 — 244.62
+none	244.5983	0.7	discard	R69 (other conv) wd=0.18 — 244.60
+none	203.1027	0.7	keep	R69 (other conv) wd=0.10 repro on g0 — 203.10 (lucky, other wd=0.10 got 245.71)
+r69_g5_curriculum_stoch	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_stoch	220.13	curriculum_stoch — random T during ramp HURTS
+r69_g6_curriculum_sawtooth	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_sawtooth	208.41	curriculum_sawtooth — re-anchoring hurts
+r69_g7_eps_tcoupled	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_epstcoupled	210.53	eps_tcoupled — scaling eps with sqrt(T) hurts
+none	220.1337	0.7	discard	R69 (other conv) curriculum stochastic — 220.13
+none	208.4135	0.7	discard	R69 (other conv) curriculum sawtooth — 208.41
+none	210.5284	0.7	discard	R69 (other conv) eps_tcoupled — 210.53
+80bf9ae	220.1337	0.7	discard	curriculum_stoch frac=0.67 — stochastic T adds noise, worse than deterministic
+80bf9ae	208.4135	0.7	discard	curriculum_sawtooth frac=0.67 — sawtooth T schedule worse than smooth ramp
+80bf9ae	210.5284	0.7	discard	eps_t_coupled wd=0.3 frac=0.67 — scaling eps by sqrt(T) is WORSE, adds noise
+none	200.8037	0.7	BEST	R67 warmdown=0.05 curriculum 0.67 — sub-201 again! (but wd=0.10 was 241, inconsistent)
+none	204.2670	0.7	keep	R66 warmdown=0.15 repro final — wd=0.15 all results: mean 202.6
+80bf9ae	203.5509	0.7	keep	warmdown=0.15 run1 (other conv) — avg of 6 wd015 runs: 202.47
+r70_g5_lr015	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr15e-2_wd015	FAIL	lr=0.15 diverges — lr=0.1 near stability boundary
+r70_g6_lr020	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr2e-1_wd015	FAIL	lr=0.20 diverges — lr=0.1 near stability boundary
+none	202.3765	0.7	keep	R67 warmdown=0.12 curriculum 0.67 — even shorter warmdown might be better!
+none	204.1359	0.7	keep	R67 warmdown=0.15 run2 curriculum 0.67 — wd=0.15 confirmation
+none	203.5509	0.7	keep	R67 warmdown=0.15 run1 curriculum 0.67 — wd=0.15 confirmation
+none	204.1043	0.7	keep	R67 warmdown=0.18 curriculum 0.67 — wd=0.18 slightly worse than 0.15
+none	203.6132	0.7	keep	R67 warmdown=0.15 frac=0.65 curriculum — wd=0.15 works at frac=0.65 too
+none	203.8986	0.7	keep	R67 warmdown=0.15 run3 curriculum 0.67 — wd=0.15 confirmation
+none	205.0747	0.7	discard	R67 warmdown=0.15 lr=0.105 curriculum 0.67 — lr=0.105 not helpful with wd=0.15
+none	201.9063	0.7	keep	R67 warmdown=0.15 run4 curriculum 0.67 — good run!
+80bf9ae	202.3765	0.7	keep	warmdown=0.12 (other conv) — wd012 competitive with wd015!
+80bf9ae	204.1359	0.7	discard	warmdown=0.15 run2 (other conv) — consistent with wd015 avg
+80bf9ae	204.1043	0.7	discard	warmdown=0.18 (other conv) — slightly worse than wd015
+80bf9ae	203.8986	0.7	keep	warmdown=0.15 run3 (other conv) — consistent
+80bf9ae	203.6132	0.7	discard	warmdown=0.15 frac=0.65 (other conv) — frac 0.65 vs 0.67 similar
+80bf9ae	201.9063	0.7	keep	warmdown=0.15 run4 (other conv) — another sub-202!
+80bf9ae	205.0747	0.7	discard	warmdown=0.15 lr=0.105 (other conv) — higher lr + wd015 doesn't help
+r70_g0_cosine_wd	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_cosine	309.17	cosine_warmdown — TERRIBLE, need linear warmdown
+r70_g1_no_warmup	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_nowarmup	311.25	no warmup — TERRIBLE, warmup CRITICAL for SPSA
+r70_g7_wd015_lottery	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	213.24	warmdown=0.15 lottery — below average
+80bf9ae	205.4894	0.7	discard	warmdown=0.05 repro CLEAN (correct denoising loss, clean GPU) — worse than wd015
+r70_g0_cosine_wd_INVALID	INVALID	GPU_SHARED	5img/sec	only_600steps	309.17	INVALID — GPU contention, 10x fewer steps
+r70_g1_no_warmup_INVALID	INVALID	GPU_SHARED	5img/sec	only_600steps	311.25	INVALID — GPU contention, 10x fewer steps
+r70_g5_wd012	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd012	202.61	warmdown=0.12 — competitive
+r70_g6_cf070	spsa	d2_e128_p8	curriculum_0.70	eps1e-2_np100_f48_lr1e-1_wd015	205.65	curriculum_frac=0.70 — slightly worse than 0.67
+1b77b85	203.0074	0.7	keep	warmdown=0.10 CLEAN repro (R70b) — middle of pack, wd015 still better
+1b77b85	202.0704	0.7	keep	warmdown=0.12 CLEAN (R70b) — very competitive with wd015! avg(wd012)≈202.2
+1b77b85	203.2734	0.7	keep	warmdown=0.18 (R70b) — similar to baseline, no improvement
+1b77b85	204.6694	0.7	keep	warmdown=0.10 run1 (R68 other conv) — middling
+1b77b85	238.9156	0.7	discard	warmdown=0.10 run2 (R68 other conv) — DIVERGED
+1b77b85	207.5742	0.7	keep	warmdown=0.12 run1 (R68 other conv) — high variance
+1b77b85	202.9804	0.7	keep	warmdown=0.12 run2 (R68 other conv) — decent
+1b77b85	204.1857	0.7	keep	warmdown=0.05 repro (R68 other conv) — confirms wd005 worse than wd015
+1b77b85	235.3764	0.7	discard	warmdown=0.08 (R68 other conv) — diverged/bad, confirms tight warmdown hurts
+none	208.5709	0.7	discard	R63 curriculum 0.6 3hr np=125 — 208.57, np=125 still too unstable for 3hr
+none	210.3959	0.7	discard	R63 curriculum 0.6 3hr np=150 warmdown=0.15 — 210.40, wd=0.15 bad at 3hr as predicted
+1b77b85	202.9658	0.7	keep	warmdown=0.13 (R68 other conv) — very competitive, confirms 0.12-0.15 sweet spot
+1b77b85	204.2780	0.7	keep	warmdown=0.00 (R68 other conv) — no warmdown worse than 0.15
+80bf9ae	208.5709	0.7	discard	3hr np125 frac=0.60 (R63 other conv) — too long, worse frac
+80bf9ae	210.3959	0.7	discard	3hr np150 wd015 frac=0.60 (R63 other conv) — too long, np150 costly
+1b77b85	218.6620	0.7	discard	cosine_warmdown wd015 CLEAN (R71) — much worse than linear warmdown, cosine decays too slowly
+r71_g7_cosine_wd_clean	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_cosine_clean	218.66	cosine_warmdown — worse than linear
+1b77b85	218.6620	0.7	discard	R71 cosine_warmdown CLEAN — terrible, confirms cosine warmdown consistently bad for SPSA
