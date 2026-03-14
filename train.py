@@ -125,7 +125,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased"],
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth"],
     help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
@@ -206,6 +206,10 @@ spsa_group.add_argument("--batch-trickle-interval", type=int, default=0,
 spsa_group.add_argument("--loss-explosion-guard", action="store_true",
     help="Skip gradient updates when loss spikes >2x the running EMA. "
          "Prevents divergence from bad SPSA gradient estimates.")
+spsa_group.add_argument("--checkpoint-rollback", action="store_true",
+    help="Periodically checkpoint model weights. If loss diverges (>1.5x EMA), "
+         "roll back to last good checkpoint and halve LR. Prevents catastrophic "
+         "divergence that wastes entire training runs.")
 spsa_group.add_argument("--swa-frac", type=float, default=0.0,
     help="If > 0, perform Stochastic Weight Averaging over the last swa_frac of training. "
          "E.g., 0.1 = average weights from 90%% to 100%% of training. Uses uniform average "
@@ -2640,6 +2644,36 @@ while True:
             n_phases = args.t_max - args.t_min + 1  # e.g., T=1→4 = 4 phases
             phase = min(int(progress * n_phases), n_phases - 1)
             current_T[0] = args.t_min + phase
+        elif args.t_schedule == "curriculum_stoch":
+            # Curriculum + stochastic: stay at t_min for curriculum_frac,
+            # then RANDOMLY sample T from [t_min, current_max_T] where
+            # current_max_T ramps linearly. Gives gradient diversity with curriculum structure.
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            if progress < cf:
+                current_T[0] = args.t_min
+            else:
+                ramp_progress = (progress - cf) / (1.0 - cf)
+                max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
+                _t_rng = random.Random(step * 31337 + 7)
+                current_T[0] = _t_rng.randint(args.t_min, max(args.t_min, max_T))
+        elif args.t_schedule == "curriculum_sawtooth":
+            # Curriculum + sawtooth: stay at t_min for curriculum_frac,
+            # then do 3 mini-ramps from t_min to progressively higher T values.
+            # Each mini-ramp re-anchors at t_min, preventing drift at high T.
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            if progress < cf:
+                current_T[0] = args.t_min
+            else:
+                ramp_progress = (progress - cf) / (1.0 - cf)
+                n_teeth = 3
+                tooth = min(int(ramp_progress * n_teeth), n_teeth - 1)
+                tooth_progress = (ramp_progress * n_teeth) - tooth
+                tooth_progress = min(tooth_progress, 1.0)
+                # Each tooth reaches progressively higher T
+                tooth_max = args.t_min + int((args.t_max - args.t_min) * (tooth + 1) / n_teeth)
+                current_T[0] = max(1, int(args.t_min + (tooth_max - args.t_min) * tooth_progress))
 
         # Batch refresh: periodically load new random images
         if args.batch_refresh_pct > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:
@@ -2717,6 +2751,36 @@ while True:
             selfdistill_targets[0] = None  # No targets for first 100 steps
 
         train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
+
+        # Checkpoint rollback: save good states, restore on divergence
+        if args.checkpoint_rollback:
+            if not hasattr(args, '_ckpt_state'):
+                args._ckpt_state = {n: p.data.clone() for n, p in model.named_parameters()}
+                args._ckpt_loss_ema = train_loss_f
+                args._ckpt_step = step
+                args._ckpt_lr = trainer.lr
+                args._rollback_count = 0
+            else:
+                args._ckpt_loss_ema = 0.99 * args._ckpt_loss_ema + 0.01 * train_loss_f
+                # Save checkpoint every 200 steps if loss is stable
+                if step % 200 == 0 and train_loss_f < 1.5 * args._ckpt_loss_ema:
+                    args._ckpt_state = {n: p.data.clone() for n, p in model.named_parameters()}
+                    args._ckpt_step = step
+                    args._ckpt_lr = trainer.lr
+                # Detect divergence: loss > 1.5x EMA
+                if train_loss_f > 1.5 * args._ckpt_loss_ema and step > 100:
+                    args._rollback_count += 1
+                    if args._rollback_count >= 3:  # 3 consecutive bad steps
+                        print(f"\n  ROLLBACK at step {step}: loss {train_loss_f:.4f} > 1.5x EMA {args._ckpt_loss_ema:.4f}")
+                        print(f"  Restoring checkpoint from step {args._ckpt_step}, halving LR {trainer.lr:.2e} → {trainer.lr/2:.2e}")
+                        for n, p in model.named_parameters():
+                            if n in args._ckpt_state:
+                                p.data.copy_(args._ckpt_state[n])
+                        trainer.lr = max(trainer.lr / 2, 1e-4)
+                        args._rollback_count = 0
+                        args._ckpt_loss_ema = train_loss_f * 0.8  # Reset EMA higher to avoid immediate re-trigger
+                else:
+                    args._rollback_count = 0
 
         # SWA: Stochastic Weight Averaging in the last swa_frac of training
         if args.swa_frac > 0:
