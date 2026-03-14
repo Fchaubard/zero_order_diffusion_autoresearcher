@@ -150,7 +150,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_lowres", "denoising_mae",
              "denoising_edge", "denoising_tv",
              "denoising_weighted_multistep", "denoising_endpoint_heavy",
-             "denoising_multistep_sqrt", "denoising_ssim_endpoint"],
+             "denoising_multistep_sqrt", "denoising_ssim_endpoint",
+             "denoising_cosine_weighted", "denoising_patch_stats"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -2669,6 +2670,62 @@ if args.solver == "spsa":
                 ssim_val = ssim_map.mean().item()  # in [-1, 1], higher = better
                 # Combine: MSE + (1-SSIM) scaled to be roughly same magnitude
                 return mse + 0.5 * (1.0 - ssim_val)
+            elif loss_type == "denoising_cosine_weighted":
+                # Cosine-spaced ODE timesteps + weighted multi-step loss.
+                # Combines two winning ideas: better ODE integration (cosine steps)
+                # with trajectory supervision (weighted intermediate losses).
+                # Exponential weighting (2^i) on intermediate MSEs.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                total_loss = 0.0
+                weight_sum = 0.0
+                for i in range(T):
+                    t_val = t_points[i]
+                    dt_i = t_points[i + 1] - t_points[i]
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt_i
+                    w = 2.0 ** i
+                    total_loss += F.mse_loss(x, x_b).item() * w
+                    weight_sum += w
+                return total_loss / weight_sum
+            elif loss_type == "denoising_patch_stats":
+                # Patch statistics loss: compare mean and variance of 4x4 patches
+                # between generated and target images. This is a cheap perceptual-like
+                # metric that captures local structure without neural network features.
+                # Zero-order exclusive — not differentiable through patch statistics.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                # Pixel-level MSE
+                mse = F.mse_loss(x_f, y_f).item()
+                # Patch statistics: unfold into 4x4 patches, compare means and vars
+                ps = 4
+                # Use avg_pool to get patch means
+                x_mean = F.avg_pool2d(x_f, ps, stride=ps)
+                y_mean = F.avg_pool2d(y_f, ps, stride=ps)
+                mean_loss = F.mse_loss(x_mean, y_mean).item()
+                # Patch variances via E[X^2] - E[X]^2
+                x_var = F.avg_pool2d(x_f * x_f, ps, stride=ps) - x_mean * x_mean
+                y_var = F.avg_pool2d(y_f * y_f, ps, stride=ps) - y_mean * y_mean
+                var_loss = F.mse_loss(x_var, y_var).item()
+                # Weight: MSE dominates, patch stats add structural guidance
+                return mse + 0.3 * mean_loss + 0.1 * var_loss
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
