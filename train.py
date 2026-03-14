@@ -125,8 +125,8 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased"],
-    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased"],
+    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
 spsa_group.add_argument("--t-max", type=int, default=50,
@@ -145,7 +145,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_midpoint", "denoising_rk4", "denoising_logmse",
              "denoising_multiscale", "denoising_heun", "denoising_cosine_steps",
              "denoising_warm_restart", "denoising_selfdistill",
-             "ssim_mse_light", "mse_clamp2"],
+             "ssim_mse_light", "mse_clamp2",
+             "denoising_discrete", "denoising_multires", "denoising_huber"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -168,8 +169,8 @@ spsa_group.add_argument("--augment-fixed", action="store_true",
 spsa_group.add_argument("--forward-fd", action="store_true",
     help="Use forward-difference SPSA instead of central-difference (1 eval per pert instead of 2, ~2x faster)")
 spsa_group.add_argument("--eps-schedule", type=str, default="fixed",
-    choices=["fixed", "cosine_decay", "linear_decay"],
-    help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), linear_decay (eps-max -> epsilon linearly)")
+    choices=["fixed", "cosine_decay", "linear_decay", "linear_warmup"],
+    help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), linear_decay (eps-max -> epsilon linearly), linear_warmup (eps-min -> epsilon over warmup period)")
 spsa_group.add_argument("--eps-max", type=float, default=None,
     help="Starting epsilon for decay schedules (decays to --epsilon). Default: 10x epsilon")
 spsa_group.add_argument("--spsa-grad-clip", type=float, default=0.0,
@@ -194,6 +195,10 @@ spsa_group.add_argument("--fixed-batch-mode", type=str, default="cycle",
     help="cycle: train on 1 image at a time; all: train on all fixed images every step")
 spsa_group.add_argument("--batch-refresh-pct", type=float, default=0.0,
     help="If > 0, refresh fixed batch every this fraction of training (e.g., 0.1 = every 10%%)")
+spsa_group.add_argument("--batch-trickle-interval", type=int, default=0,
+    help="If > 0, replace 1 random image in fixed batch every N steps. Gradual replacement "
+         "avoids the distribution shift that causes full batch-refresh to diverge. "
+         "E.g., 200 = replace 1/48 images every 200 steps, full turnover in ~9600 steps.")
 spsa_group.add_argument("--spsa-adam", action="store_true",
     help="Use Adam optimizer for SPSA gradient updates (momentum + adaptive LR)")
 spsa_group.add_argument("--spsa-adam-beta1", type=float, default=0.9,
@@ -2025,6 +2030,61 @@ if args.solver == "spsa":
                     ssim_loss = (1 - ssim.mean()).item()
                     return mse + ssim_weight * ssim_loss
                 return mse
+            elif loss_type == "denoising_discrete":
+                # MSE on discretized pixel values (round to 0-255 then back)
+                # NOT differentiable — zero-order exclusive!
+                # Directly optimizes for the pixel values that matter in final images
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Discretize to 0-255 range (images are in [-1, 1])
+                x_disc = torch.round((x.float() + 1) * 127.5).clamp(0, 255) / 127.5 - 1
+                y_disc = torch.round((x_b.float() + 1) * 127.5).clamp(0, 255) / 127.5 - 1
+                return F.mse_loss(x_disc, y_disc).item()
+            elif loss_type == "denoising_multires":
+                # Multi-resolution MSE: full + half resolution averaged
+                # Captures both fine detail and coarse structure
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse_full = F.mse_loss(x_f, y_f).item()
+                mse_half = F.mse_loss(F.avg_pool2d(x_f, 2), F.avg_pool2d(y_f, 2)).item()
+                return mse_full + 0.5 * mse_half
+            elif loss_type == "denoising_huber":
+                # Huber loss (L1 for large errors, L2 for small) — robust to outliers
+                # Non-differentiable at the L1/L2 boundary — zero-order exclusive!
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                return F.huber_loss(x_f, y_f, delta=0.5).item()
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
@@ -2391,6 +2451,36 @@ while True:
             else:
                 ramp_progress = (progress - cf) / (1.0 - cf)
                 current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
+        elif args.t_schedule == "curriculum_exp":
+            # Curriculum + exponential ramp: stay at t_min for curriculum_frac,
+            # then exponential ramp to t_max (spends more ramp time at low T)
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            if progress < cf:
+                current_T[0] = args.t_min
+            else:
+                ramp_progress = (progress - cf) / (1.0 - cf)
+                ratio = max(args.t_max / max(args.t_min, 1), 1.0)
+                current_T[0] = max(1, int(args.t_min * (ratio ** ramp_progress)))
+        elif args.t_schedule == "curriculum_step":
+            # Curriculum step: stay at t_min for curriculum_frac, then JUMP to t_max
+            # No linear ramp through intermediate T values — skip T=2,3
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            if progress < cf:
+                current_T[0] = args.t_min
+            else:
+                current_T[0] = args.t_max
+        elif args.t_schedule == "curriculum_mix":
+            # Curriculum mix: stay at t_min for curriculum_frac, then randomly
+            # sample T from {t_min, t_max} each step (keep reinforcing T=1)
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            if progress < cf:
+                current_T[0] = args.t_min
+            else:
+                _mix_rng = random.Random(step * 31337 + 42)
+                current_T[0] = args.t_min if _mix_rng.random() < 0.5 else args.t_max
         elif args.t_schedule == "reverse":
             # Reverse: start at t_max, ramp down to t_min
             progress = min(total_training_time / args.time_budget, 1.0)
@@ -2435,6 +2525,19 @@ while True:
                         torch.cat([fb[1] for fb in fixed_buffer], dim=0),
                     )
                 print(f"  [Batch refresh at {progress_now:.1%}] Loaded {args.fixed_batch_size} new images")
+
+        # Batch trickle: replace 1 image every N steps (gradual replacement)
+        if args.batch_trickle_interval > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:
+            if step > 0 and step % args.batch_trickle_interval == 0:
+                import random as _rand
+                replace_idx = _rand.randint(0, len(fixed_buffer) - 1)
+                x_new, y_new, _ = next(train_loader)
+                fixed_buffer[replace_idx] = (x_new[:1], y_new[:1])
+                if args.fixed_batch_mode == "all":
+                    fixed_all_batch = (
+                        torch.cat([fb[0] for fb in fixed_buffer], dim=0),
+                        torch.cat([fb[1] for fb in fixed_buffer], dim=0),
+                    )
 
         # Adaptive perturbation count: decay n_perts over training
         if args.adaptive_perts:
@@ -2502,6 +2605,13 @@ while True:
                     trainer.epsilon = eps_lo + (eps_hi - eps_lo) * eps_mult
                 elif args.eps_schedule == "linear_decay":
                     trainer.epsilon = eps_hi + (eps_lo - eps_hi) * progress
+                elif args.eps_schedule == "linear_warmup":
+                    # Warmup epsilon from eps_lo/2 to eps_lo over first 10% of training
+                    eps_min = eps_lo * 0.5
+                    if progress < 0.1:
+                        trainer.epsilon = eps_min + (eps_lo - eps_min) * (progress / 0.1)
+                    else:
+                        trainer.epsilon = eps_lo
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
 
