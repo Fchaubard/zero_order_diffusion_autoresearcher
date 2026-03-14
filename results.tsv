@@ -1000,3 +1000,103 @@ none	210.3959	0.7	discard	R63 curriculum 0.6 3hr np=150 warmdown=0.15 — 210.40
 1b77b85	218.6620	0.7	discard	cosine_warmdown wd015 CLEAN (R71) — much worse than linear warmdown, cosine decays too slowly
 r71_g7_cosine_wd_clean	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_cosine_clean	218.66	cosine_warmdown — worse than linear
 1b77b85	218.6620	0.7	discard	R71 cosine_warmdown CLEAN — terrible, confirms cosine warmdown consistently bad for SPSA
+none	204.6694	0.7	keep	R68 warmdown=0.10 run1 curriculum 0.67 — wd=0.10 OK in this run
+none	238.9156	0.7	discard	R68 warmdown=0.10 run2 curriculum 0.67 — wd=0.10 unstable, bad run
+none	207.5742	0.7	discard	R68 warmdown=0.12 run1 curriculum 0.67 — wd=0.12 high variance
+none	202.9804	0.7	keep	R68 warmdown=0.12 run2 curriculum 0.67 — wd=0.12 good run
+none	204.1857	0.7	keep	R68 warmdown=0.05 repro curriculum 0.67 — first run 200.80, repro 204.19 (high variance)
+none	235.3764	0.7	discard	R68 warmdown=0.08 curriculum 0.67 — unstable at very short warmdowns
+none	202.9658	0.7	keep	R68 warmdown=0.13 curriculum 0.67 — similar to wd=0.15, good
+none	204.2780	0.7	keep	R68 warmdown=0.00 (no warmdown) curriculum 0.67 — no warmdown works OK but not optimal
+r71_g7_forward_fd	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_fwd_fd	FAIL	forward FD — noisier gradients diverge
+71ba7a8	209.5119	0.7	discard	R71 t_max=3 curriculum 0.67 — fewer ODE steps = worse FID despite lower training loss
+71ba7a8	203.8916	0.7	discard	R71 curriculum_frac=0.50 — worse than frac=0.67, confirms 0.67 optimal
+71ba7a8	0.0000	0.0	crash	R72 topk=0.5 — DIVERGED at 21.1%, topk too aggressive, discards too many perturbations
+71ba7a8	209.5119	0.7	discard	tmax=3 (R71) — T=1→3 much worse than T=1→4, need 4 denoising steps
+71ba7a8	203.8916	0.7	keep	curriculum_frac=0.50 (R71) — worse than 0.67, confirms optimal frac
+r71_g5_tmax3	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_tmax3	209.51	t_max=3 — fewer ODE steps hurts, less expressive
+r71_g6_cf050	spsa	d2_e128_p8	curriculum_0.50	eps1e-2_np100_f48_lr1e-1_wd015	203.89	curriculum_frac=0.50 — worse than 0.67, less T=1 training time
+r71_g5_tmax3	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_tmax3	209.51	T_max=3 — worse than T_max=4
+r71_g6_cf050	spsa	d2_e128_p8	curriculum_0.50	eps1e-2_np100_f48_lr1e-1_wd015	203.89	curriculum_frac=0.50 — decent, within normal range
+71ba7a8	201.9204	0.7	keep	rollback + wd015 (R71) — checkpoint rollback HELPS! 4th best ever
+71ba7a8	205.2505	0.7	discard	t_coupled eps + wd015 (R70b) — confirms t_coupled worse
+71ba7a8	207.1483	0.7	discard	cosine_warmdown + wd015 (R70b) — cosine warmdown bad again
+r71_g3_rollback_wd015	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_rollback	201.92	checkpoint rollback + wd015 — BEST! Auto-recovers from divergence
+r70b_g2_t_coupled_wd015	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_tcoupled	205.25	t_coupled eps schedule — worse than fixed eps
+r70b_g4_cosine_wd015	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_cosine	207.15	cosine LR schedule with wd015 — worse than linear warmdown
+71ba7a8	0.0000	0.7	crash	topk50 (R72) — DIVERGED at 21.1%! Top-K amplifies outlier perturbations
+71ba7a8	205.2505	0.7	discard	R70b t_coupled epsilon schedule + wd=0.15 — not helpful
+71ba7a8	201.9204	0.7	keep	R71 checkpoint-rollback + wd=0.15 — sub-202! rollback helps stability
+71ba7a8	207.1483	0.7	discard	R70b cosine wd=0.15 — cosine warmdown still bad, but better with wd015 than wd030
+71ba7a8	203.0131	0.7	keep	rollback + wd012 (R71) — rollback doesn't improve wd012 as much as wd015
+71ba7a8	0.0000	0.7	crash	topk30 (R72) — DIVERGED at 28.0%! Top-K scaling too aggressive for SPSA
+r71_g0_rollback_wd012	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd012_rollback	203.01	checkpoint rollback + wd012 — decent, wd015+rollback was better (201.92)
+71ba7a8	203.0131	0.7	discard	R71 checkpoint-rollback + wd=0.12 — worse than rollback + wd=0.15 (201.92)
+71ba7a8	204.3968	0.7	discard	R70b cosine warmdown wd=0.30 — cosine warmdown consistently worse
+71ba7a8	202.1869	0.7	keep	R70b loss-explosion-guard + wd=0.30 — competitive! guard prevents divergent gradient updates
+71ba7a8	263.4846	0.7	discard	R71 curriculum_weighted T schedule — terrible! geometric weighting worse than linear ramp
+71ba7a8	207.2774	0.7	discard	R71 warmup=0.05 — small warmup hurts (default 0.10 better)
+71ba7a8	204.4183	0.7	discard	R71 warmup=0.20 — longer warmup slightly worse than default
+71ba7a8	313.2019	0.7	discard	R71 T=1 fixed only — never trains with T>1, terrible FID confirms curriculum T ramp essential
+r71_g0_weighted	spsa	d2_e128_p8	curriculum_weighted	eps1e-2_np100_f48_lr1e-1_wd015	263.48	curriculum_weighted schedule — terrible, geometric weight distribution too extreme
+r71_g2_t1_only	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_tmax1	313.20	T=1 only (no T ramp) — confirms T>1 exposure essential. GPU-contended (~5 img/sec)
+r71_g3_warmup005	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_warmup005	207.28	LR warmup 0.5% — slightly worse, warmup wastes early steps
+r71_g4_warmup020	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_warmup020	204.42	LR warmup 2% — minimal effect, small warmup not harmful
+r72_g6_antithetic	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_antithetic	241.93	antithetic perturbations — BAD again (GPU-contended ~48 img/sec shared)
+71ba7a8	0.0000	0.0	discard	R75 curriculum_weighted (killed — already known terrible from R71: 263 FID)
+71ba7a8	241.9343	0.7	discard	R72 antithetic perturbations — terrible (241 vs 202 baseline), antithetic confirmed bad with curriculum
+71ba7a8	308.3926	0.7	discard	R71 T=1 fixed (second run) — confirms T=1 only gives 308-313, curriculum ramp essential
+71ba7a8	241.9343	0.7	discard	antithetic SPSA (R72) — TERRIBLE! Halved unique directions = worse gradient
+71ba7a8	263.4846	0.7	discard	weighted perturbations (R71 other) — bad
+71ba7a8	308.3926	0.7	discard	T=1 only, no curriculum (R71 other) — terrible without T ramp
+71ba7a8	313.2019	0.7	discard	T=1 only, no curriculum run2 (R71 other) — confirms T=1 alone bad
+71ba7a8	207.2774	0.7	keep	warmup_ratio=0.05 (R71 other) — worse than default warmup
+71ba7a8	204.4183	0.7	keep	warmup_ratio=0.20 (R71 other) — decent but not better than wd015
+r71_g0_weighted	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_weighted	263.48	curriculum_weighted — discrete T phases BAD for SPSA
+r71_g3_warmup005	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_warmup005	207.28	warmup=0.05 — less warmup hurts
+r71_g4_warmup020	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_warmup020	204.42	warmup=0.20 — same as 0.10
+71ba7a8	0.0000	0.0	crash	R75 sign-update (signSGD) — DIVERGED, sign of noisy SPSA gradient not reliable enough
+r71_g1_t1_only	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_tmax1	308.39	T=1 only (seed 2) — terrible, GPU-contended. Confirms T>1 ramp essential
+71ba7a8	0.0000	0.0	crash	R75 guided-pert=0.2 — DIVERGED at 34.1%, loss spiked 0.71→2.45. Guided perturbations destabilize.
+r71_g7_lottery2	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	203.74	lottery seed 2 — more variance data for wd015 baseline
+r75_g5_dual_t	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_dual_t	212.84	dual-T (half T=1, half curriculum) — WORSE, T=1 perts dilute higher-T gradients
+r72_g5_polish05	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_polish05	264.92	curriculum polish 5% — TERRIBLE, dropping to T=1 at end destroys T>1 learning
+71ba7a8	264.9164	0.7	discard	curriculum_polish 5% (R72) — TERRIBLE! T=1 polish ruins multi-step model
+71ba7a8	264.9164	0.7	discard	R72 curriculum-polish=0.05 — TERRIBLE, going back to T=1 at end ruins T=4 training
+71ba7a8	203.1322	0.7	keep	R72 lottery1 (standard config repro) — confirms baseline ~203
+71ba7a8	214.0232	0.7	discard	R72 lottery2 — high variance run, confirms np=100 instability
+r72_g5_lottery1	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	203.13	lottery run
+r72_g6_lottery2	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	214.02	lottery run — unlucky
+r71_g7_lottery2	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	203.74	lottery run
+r71_g1_t1_only_INVALID	INVALID	GPU_SHARED	T1only	only_600steps	308.39	INVALID — GPU contention
+r70b_g1_cosine_wd030	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd030_cosine	204.40	cosine LR schedule with wd030 — slightly worse than linear, consistent with previous
+r70b_g7_guard_wd030	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd030_guard	202.19	explosion guard + wd030 — competitive! Guard prevents bad updates
+r75_g2_smooth_cur	spsa	d2_e128_p8	curriculum_smooth	eps1e-2_np100_f48_lr1e-1_wd015	215.69	smooth curriculum (stochastic T rounding) — worse than discrete T transitions
+r75_g3_phased	spsa	d2_e128_p8	phased	eps1e-2_np100_f48_lr1e-1_wd015	260.56	phased T schedule — terrible, sequential phases with LR restart fails
+71ba7a8	215.6855	0.7	discard	R75 curriculum_smooth — stochastic T rounding makes it worse (215 vs 202), mixing T values hurts
+71ba7a8	260.5618	0.7	discard	R75 phased T — equal time at each T level terrible (260), confirms heavy T=1 weighting essential
+71ba7a8	315.7218	0.7	discard	R72 grad-verify — gradient verification overhead + contention = terrible
+71ba7a8	315.7218	0.7	discard	grad-verify (R72) — CATASTROPHIC! Reverting "bad" steps prevents exploration
+r72_g5_grad_verify	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_gradverify	315.72	gradient verification — TERRIBLE, extra forward pass per step halves step count
+r75_g1_cosine_steps	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_cossteps	202.80	cosine step-wise loss — decent, near baseline
+r72_g6_rollback_seed2	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_rollback_s2	205.76	rollback seed2 — higher than rollback seed0 (201.92), run variance
+71ba7a8	202.8048	0.7	keep	R75 cosine-spaced ODE steps — competitive (202.80), better timestep spacing during integration
+71ba7a8	0.0000	0.0	crash	R75 denoising_heun — DIVERGED, 2x model evals per step too slow, too few total steps
+71ba7a8	205.7604	0.7	discard	R72 checkpoint-rollback seed=2 — 205.76, rollback helps some seeds but high variance
+71ba7a8	205.7604	0.7	keep	rollback + wd015 seed=2 (R72) — high variance, not as good as seed=0
+71ba7a8	219.7098	0.7	discard	R75 SWA=0.10 — weight averaging HURTS (219 vs 202), averaging worse-than-final weights degrades quality
+71ba7a8	209.0813	0.7	discard	R75 SWA=0.20 — weight averaging over last 20% even worse (209), confirms SWA bad for SPSA
+71ba7a8	205.8393	0.7	discard	R75 loss-explosion-guard (contended) — 205.8, guard alone decent but contention hurt this run
+71ba7a8	326.5755	0.7	discard	R75 multi-noise — TERRIBLE (326), different noise per perturbation destroys gradient consistency
+r72_g6_adaptive_T	spsa	d2_e128_p8	adaptive	eps1e-2_np100_f48_lr1e-1_wd015	211.06	adaptive T (increase on convergence) — worse than fixed curriculum
+r75_g0_swa020	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_swa020	209.08	SWA 20% — averaging hurts, model still changing too fast at end
+r75_g1_multi_noise	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_multinoise	326.58	multi-noise per pert — CATASTROPHIC, corrupts gradient signal
+r75_g4_explosion_guard	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_guard	205.84	explosion guard — near baseline, guard rarely triggers
+r75_g4_smooth_cf070	spsa	d2_e128_p8	curriculum_smooth_0.70	eps1e-2_np100_f48_lr1e-1_wd015	222.62	smooth curriculum frac=0.70 — bad, stochastic T rounding hurts
+r75_g7_swa010	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_swa010	219.71	SWA 10% — bad, averaging destroys late-training specialization
+71ba7a8	211.0605	0.7	discard	adaptive T (R72) — too conservative, wastes time at low T
+r72_g3_rollback_repro	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_rollback	203.46	rollback reproduction — 203.46 vs 201.92 original. Rollback may help ~1-2 FID on average
+71ba7a8	203.4602	0.7	keep	rollback + wd015 repro (R72) — avg rollback ~203.7, similar to baseline
+71ba7a8	222.6245	0.7	discard	R75 curriculum_smooth + frac=0.70 — 222.6, smooth + higher frac both hurt
+71ba7a8	211.0605	0.7	discard	R72 adaptive T schedule — 211, auto-increasing T when loss stabilizes doesn't match curriculum quality
+71ba7a8	203.4602	0.7	keep	R72 checkpoint-rollback repro — 203.46, rollback helps (avg rollback: (201.9+203.0+203.5)/3 = 202.8)
