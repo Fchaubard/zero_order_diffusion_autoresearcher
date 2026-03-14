@@ -125,7 +125,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive"],
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive", "curriculum_weighted"],
     help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
@@ -239,6 +239,10 @@ spsa_group.add_argument("--elite-perts", type=int, default=0,
     help="Number of elite perturbation seeds to carry over from previous step (0=disabled). "
          "Tracks the K best perturbation directions (lowest loss) and reuses them next step, "
          "filling remaining slots with fresh random perturbations. Exploits promising directions.")
+spsa_group.add_argument("--sign-consensus", type=int, default=0,
+    help="Only update parameters where gradient sign agrees over last K steps (0=disabled). "
+         "Maintains a running sign buffer and masks out parameters with flipping signs. "
+         "Reduces noise from unreliable SPSA gradient estimates at per-parameter level.")
 spsa_group.add_argument("--freeze-pattern", type=str, default="",
     help="Comma-separated patterns of module names to freeze (exclude from SPSA perturbation). "
          "E.g., 'label_embed,time_embed' freezes conditioning layers. "
@@ -621,6 +625,8 @@ class SPSATrainer:
         self.topk = topk  # fraction of perturbations to keep (0 = all)
         self.elite_perts = 0  # set from args after construction
         self._elite_seeds = []  # seeds of best perturbations from last step
+        self.sign_consensus = 0  # set from args after construction
+        self._sign_history = None  # ring buffer of gradient signs
         self._loss_ema = None  # EMA of loss for explosion detection
 
         self.params = [p for p in model.parameters() if p.requires_grad]
@@ -903,6 +909,27 @@ class SPSATrainer:
                     self._loss_ema = 0.95 * self._loss_ema + 0.05 * avg_loss
                     return avg_loss  # Return loss but don't update parameters
                 self._loss_ema = 0.99 * self._loss_ema + 0.01 * avg_loss
+
+        # Sign consensus: mask out parameters with flipping gradient signs
+        if self.sign_consensus > 0 and self.grads is not None:
+            K = self.sign_consensus
+            if self._sign_history is None:
+                # Initialize: list of K sign tensors per param group, index into ring buffer
+                self._sign_history = [[torch.zeros(info['numel'], device='cuda', dtype=torch.int8)
+                                       for _ in range(K)] for info in self.param_info]
+                self._sign_idx = 0
+            # Record current gradient sign
+            for i, grad in enumerate(self.grads):
+                self._sign_history[i][self._sign_idx % K] = grad.sign().to(torch.int8)
+            self._sign_idx += 1
+            # After K steps of history, apply consensus mask
+            if self._sign_idx >= K:
+                for i, grad in enumerate(self.grads):
+                    # Sum signs over K steps: +K means all positive, -K means all negative
+                    sign_sum = sum(self._sign_history[i]).float()
+                    # Mask: only keep gradient where |sign_sum| > 0.6*K (60% agreement)
+                    mask = (sign_sum.abs() > 0.6 * K).to(grad.dtype)
+                    self.grads[i] = grad * mask
 
         # Apply update
         if self.use_adam and self.m is not None:
@@ -1416,6 +1443,9 @@ else:
     if args.elite_perts > 0:
         trainer.elite_perts = args.elite_perts
         print(f"  Elite perturbations: {args.elite_perts} seeds carried over each step")
+    if args.sign_consensus > 0:
+        trainer.sign_consensus = args.sign_consensus
+        print(f"  Sign consensus: only update params with consistent sign over {args.sign_consensus} steps")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -2756,6 +2786,26 @@ while True:
                 tooth_max = args.t_min + int((args.t_max - args.t_min) * (tooth + 1) / n_teeth)
                 current_T[0] = max(1, int(args.t_min + (tooth_max - args.t_min) * tooth_progress))
 
+        elif args.t_schedule == "curriculum_weighted":
+            # Weighted phase schedule: spend exponentially decreasing time at each T
+            # T=1: 50%, T=2: 25%, T=3: 15%, T=4: 10% (for T_min=1, T_max=4)
+            # More time at low T where SPSA gradients are most reliable
+            progress = min(total_training_time / args.time_budget, 1.0)
+            n_T = args.t_max - args.t_min + 1  # number of T values
+            # Geometric weights: 2^(n-i) for i-th phase
+            weights = [2.0 ** (n_T - 1 - i) for i in range(n_T)]
+            total_w = sum(weights)
+            boundaries = []
+            cumsum = 0.0
+            for w in weights:
+                cumsum += w / total_w
+                boundaries.append(cumsum)
+            # Find which phase we're in
+            current_T[0] = args.t_max  # default to last
+            for i, b in enumerate(boundaries):
+                if progress < b:
+                    current_T[0] = args.t_min + i
+                    break
         elif args.t_schedule == "adaptive":
             # Adaptive T: increase T when loss stabilizes at current T
             # Uses loss EMA slope to detect convergence, then bumps T
