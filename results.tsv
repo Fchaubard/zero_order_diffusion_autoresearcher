@@ -1100,3 +1100,29 @@ r72_g3_rollback_repro	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_w
 71ba7a8	222.6245	0.7	discard	R75 curriculum_smooth + frac=0.70 — 222.6, smooth + higher frac both hurt
 71ba7a8	211.0605	0.7	discard	R72 adaptive T schedule — 211, auto-increasing T when loss stabilizes doesn't match curriculum quality
 71ba7a8	203.4602	0.7	keep	R72 checkpoint-rollback repro — 203.46, rollback helps (avg rollback: (201.9+203.0+203.5)/3 = 202.8)
+r72_g0_adaptive	spsa	d2_e128_p8	adaptive	eps1e-2_np100_f48_lr1e-1_wd015	231.95	adaptive T (other session) — bad, worse than curriculum
+r72_g3_lottery3	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	230.27	lottery3 — GPU-contended run, poor result
+r72_g4_lottery4	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	214.44	lottery4 — likely GPU-contended
+r72_g0_adaptive	spsa	d2_e128_p8	adaptive_T	eps1e-2_np100_f48_lr1e-1_wd015	231.95	adaptive T — too conservative
+r72_g3_lottery3	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	230.27	lottery — GPU contention (42 img/s)
+r72_g4_lottery4	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	214.44	lottery — unlucky
+71ba7a8	0.0000	0.0	crash	R75 accum2 + np=50 — DIVERGED, np=50 too few perturbations
+71ba7a8	0.0000	0.0	crash	R75 spsa-adam — DIVERGED, Adam momentum amplifies SPSA noise
+71ba7a8	230.2683	0.7	discard	R72 lottery3 — bad luck (230), high variance of np=100
+71ba7a8	214.4412	0.7	discard	R72 lottery4 — bad luck (214), confirms np=100 unreliable
+71ba7a8	231.9485	0.7	discard	R72 adaptive T (v2) — 231, adaptive T increase still poor
+r75_g2_layerwise	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_layerwise	314.66	layerwise SPSA — TERRIBLE, 1/7 params per step too slow
+71ba7a8	314.6596	0.7	discard	R75 layerwise-spsa — terrible (314), perturbing one layer at a time insufficient gradient signal
+71ba7a8	230.9605	0.7	discard	elite-perts 20 (R72) — bad! Reusing old seeds biases exploration
+r72_g5_elite20	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_elite20	230.96	elite 20 perturbations carried over — BAD, possibly GPU-contended
+r73_g1_lottery5	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	209.59	lottery run
+r73_g5_lottery6_CONTENTION	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	244.21	lottery — GPU contention (43 img/s)
+r73_g6_lottery7	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	203.22	lottery run
+r73_g7_lottery8	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015	202.15	lottery run
+71ba7a8	208.0341	0.7	discard	R75 1.5-SPSA curvature — 208, curvature scaling doesn't help with curriculum config
+r75_g2_curvature15	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_curv15	208.03	1.5-SPSA curvature with alpha=1.5 — worse than default alpha, too aggressive scaling
+71ba7a8	309.0525	0.7	discard	sign-consensus K=5 (R72) — TERRIBLE! Most params masked, too conservative
+71ba7a8	0.0000	0.0	crash	R76 guard_3hr — DIVERGED, explosion guard alone insufficient for 3hr stability
+r72_g5_signcons5	spsa	d2_e128_p8	curriculum_0.67	eps1e-2_np100_f48_lr1e-1_wd015_signcons5	309.05	sign consensus 5 — TERRIBLE, masks too many params, reduces effective updates
+71ba7a8	293.3378	0.7	discard	adaptive_var epsilon (R72) — TERRIBLE! Variance-based eps adaptation fails
+71ba7a8	203.5386	0.7	keep	rollback + wd012 (R72) — no improvement over plain wd012
