@@ -148,7 +148,9 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "ssim_mse_light", "mse_clamp2",
              "denoising_discrete", "denoising_multires", "denoising_huber",
              "denoising_lowres", "denoising_mae",
-             "denoising_edge", "denoising_tv"],
+             "denoising_edge", "denoising_tv",
+             "denoising_weighted_multistep", "denoising_endpoint_heavy",
+             "denoising_multistep_sqrt", "denoising_ssim_endpoint"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -275,6 +277,41 @@ spsa_group.add_argument("--double-dip", action="store_true",
     help="Double-dip training: after completing the curriculum, restart from T=1 "
          "with the learned weights for a second curriculum cycle. Uses warmdown only at the end "
          "of the second cycle. Doubles effective training by restarting curriculum.")
+spsa_group.add_argument("--dual-t", action="store_true",
+    help="Dual-T perturbation: half the perturbations evaluate at T=1 (always), "
+         "half at the current curriculum T. This continuously reinforces T=1 behavior "
+         "even during the T>1 ramp phase, preventing catastrophic forgetting of early steps.")
+spsa_group.add_argument("--sa-noise", type=float, default=0.0,
+    help="Simulated annealing noise: every 500 steps, add random perturbation to model "
+         "params with this std dev (0=disabled). Helps escape local minima in zero-order landscape. "
+         "E.g., 1e-3 = small exploration noise.")
+spsa_group.add_argument("--loss-lr-scale", action="store_true",
+    help="Scale learning rate proportionally to current loss value. "
+         "High loss (early training) → higher effective LR for fast progress. "
+         "Low loss (late training) → lower effective LR for fine-tuning. "
+         "Loss-adaptive rather than time-based LR scheduling.")
+spsa_group.add_argument("--sparse-pert", type=float, default=0.0,
+    help="Sparse perturbation fraction (0=disabled, 0.1=10%% of params perturbed per direction). "
+         "Only perturbs a random subset of parameters each step. Lower dimensionality → "
+         "better gradient estimate for those params. All params covered over many steps. "
+         "E.g., 0.1 = 10x fewer params perturbed = 10x lower variance for those params.")
+spsa_group.add_argument("--cascade-T", action="store_true",
+    help="Cascade T training: at T=k, evaluate loss at EACH intermediate step (1,2,...,k) "
+         "and sum them. This trains all ODE steps simultaneously rather than just the final output. "
+         "More training signal per forward pass at higher T values.")
+spsa_group.add_argument("--aux-loss", action="store_true",
+    help="Auxiliary loss at each transformer block: compute loss at intermediate layers "
+         "using shared output projection. Gives per-layer gradient signal in SPSA — "
+         "each layer's loss adds independent information to the gradient estimate. "
+         "Total loss = sum of per-layer losses (weighted by 1/n_layers at intermediates).")
+spsa_group.add_argument("--lr-t-scale", type=float, default=0.0,
+    help="Scale LR by 1/T^lr_t_scale when T > 1 (0=disabled). "
+         "E.g., 0.5 = LR scaled by 1/sqrt(T). At T=4, LR = base_lr / 2. "
+         "Compensates for noisier gradients at higher T values.")
+spsa_group.add_argument("--restart-on-ramp", action="store_true",
+    help="Reset LR to initial value when T increases during curriculum ramp. "
+         "Gives a fresh high-LR start for each new T value, like cosine restart. "
+         "Combined with warmdown, this gives each T phase its own mini-training schedule.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -544,12 +581,14 @@ class DiT(nn.Module):
             group["initial_lr"] = group["lr"]
         return optimizer
 
-    def forward(self, x, t, class_labels=None):
+    def forward(self, x, t, class_labels=None, return_intermediates=False):
         """
         x: (B, C, H, W) noisy images
         t: (B,) timesteps in [0, 1]
         class_labels: (B,) class indices
+        return_intermediates: if True, also return decoded outputs from each block
         Returns: (B, C, H, W) predicted velocity
+                 or tuple(velocity, [intermediate_velocities]) if return_intermediates
         """
         # Patch embed + positional
         x = self.patch_embed(x) + self.pos_embed
@@ -559,10 +598,19 @@ class DiT(nn.Module):
         if class_labels is not None:
             c = c + self.label_embed(class_labels)
 
+        intermediates = [] if return_intermediates else None
+
         # Transformer blocks (optionally repeated for weight-shared depth)
         for _ in range(self.config.repeat_blocks):
             for block in self.blocks:
                 x = block(x, c)
+                if return_intermediates:
+                    # Decode this intermediate through shared output head
+                    shift_i, scale_i = self.final_adaLN(c).chunk(2, dim=-1)
+                    x_i = norm(x) * (1 + scale_i.unsqueeze(1)) + shift_i.unsqueeze(1)
+                    x_i = self.final_proj(x_i)
+                    x_i = self.unpatchify(x_i)
+                    intermediates.append(x_i)
 
         # Output projection with AdaLN
         shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
@@ -570,6 +618,8 @@ class DiT(nn.Module):
         x = self.final_proj(x)
         x = self.unpatchify(x)
 
+        if return_intermediates:
+            return x, intermediates
         return x
 
 # ---------------------------------------------------------------------------
@@ -660,6 +710,7 @@ class SPSATrainer:
         self._verify_revert_count = 0
         self._verify_total_count = 0
         self._loss_ema = None  # EMA of loss for explosion detection
+        self.sparse_pert = 0.0  # fraction of params to perturb (0=all)
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -781,6 +832,18 @@ class SPSATrainer:
             if is_antithetic:
                 packed = ~packed  # bitwise complement = opposite direction
 
+            # Sparse perturbation: only perturb a subset of parameter groups each step
+            # Uses modular arithmetic to cycle through groups deterministically
+            _sparse_active = None  # None = all active
+            if self.sparse_pert > 0:
+                n_groups = len(self.param_info)
+                k_active = max(1, int(n_groups * self.sparse_pert))
+                # Deterministic rotation: each perturbation perturbs a different subset
+                _sparse_start = (iteration * n_groups + pert_idx * 7) % n_groups
+                _sparse_active = set()
+                for _si in range(k_active):
+                    _sparse_active.add((_sparse_start + _si) % n_groups)
+
             # Guided perturbations: bias toward gradient EMA sign direction
             if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
                 # Generate per-byte guidance mask: each bit independently uses EMA with prob guided_pert
@@ -793,7 +856,9 @@ class SPSATrainer:
                 packed = torch.where(guide_mask, self.grad_ema_packed, packed)
 
             # Apply +epsilon perturbation
-            for info in self.param_info:
+            for _pi, info in enumerate(self.param_info):
+                if _sparse_active is not None and _pi not in _sparse_active:
+                    continue
                 flat = info['param'].data.view(-1)
                 _unpack_and_apply[info['grid']](
                     flat, packed[info['packed_offset']:],
@@ -807,7 +872,9 @@ class SPSATrainer:
             if self.forward_fd:
                 # Forward-difference: use (L+ - L0) / epsilon
                 # Only need to undo +epsilon (not -2*epsilon)
-                for info in self.param_info:
+                for _pi, info in enumerate(self.param_info):
+                    if _sparse_active is not None and _pi not in _sparse_active:
+                        continue
                     flat = info['param'].data.view(-1)
                     _unpack_and_apply[info['grid']](
                         flat, packed[info['packed_offset']:],
@@ -816,7 +883,9 @@ class SPSATrainer:
             else:
                 # Central difference: use (L+ - L-) / (2*epsilon)
                 # Apply -2*epsilon (net: -epsilon from original)
-                for info in self.param_info:
+                for _pi, info in enumerate(self.param_info):
+                    if _sparse_active is not None and _pi not in _sparse_active:
+                        continue
                     flat = info['param'].data.view(-1)
                     _unpack_and_apply[info['grid']](
                         flat, packed[info['packed_offset']:],
@@ -828,7 +897,9 @@ class SPSATrainer:
                 loss_minus /= self.accum_steps
 
                 # Restore to original (+epsilon to undo the -2*epsilon)
-                for info in self.param_info:
+                for _pi, info in enumerate(self.param_info):
+                    if _sparse_active is not None and _pi not in _sparse_active:
+                        continue
                     flat = info['param'].data.view(-1)
                     _unpack_and_apply[info['grid']](
                         flat, packed[info['packed_offset']:],
@@ -854,6 +925,8 @@ class SPSATrainer:
             else:
                 # Accumulate gradient immediately
                 for i, info in enumerate(self.param_info):
+                    if _sparse_active is not None and i not in _sparse_active:
+                        continue
                     _unpack_and_accumulate[info['grid']](
                         self.grads[i], packed[info['packed_offset']:],
                         info['numel'], grad_coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
@@ -1521,6 +1594,9 @@ else:
     if args.grad_verify:
         trainer.grad_verify = True
         print(f"  Gradient verification: will check loss after each update")
+    if args.sparse_pert > 0:
+        trainer.sparse_pert = args.sparse_pert
+        print(f"  Sparse perturbation: {args.sparse_pert:.0%} of param groups perturbed each step")
     if args.lr_layer_scale:
         trainer.lr_layer_scale = True
         # Compute per-param LR scale: linearly from 2.0 (first param) to 0.5 (last param)
@@ -1647,6 +1723,30 @@ if args.solver == "spsa":
                 predicted = model(x_t, t, class_labels=y_b)
                 return F.mse_loss(predicted, velocity_target).item()
             elif loss_type == "denoising":
+                # Auxiliary loss: decode at each transformer block for per-layer gradient signal
+                if args.aux_loss:
+                    dev = x_b.device
+                    gen = torch.Generator(device=dev)
+                    gen.manual_seed(noise_seed[0] + batch_idx)
+                    noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                    x = noise.clone()
+                    dt_val = 1.0 / T
+                    total_aux_loss = 0.0
+                    n_blocks = len(model.blocks) * model.config.repeat_blocks
+                    for i in range(T):
+                        t_val = i / T
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity, intermediates = model(x, t_tensor, class_labels=y_b, return_intermediates=True)
+                        x = x + velocity * dt_val
+                        # Add auxiliary losses from intermediate layers
+                        for j, x_inter in enumerate(intermediates[:-1]):  # skip last (same as final)
+                            # Intermediate velocity prediction → apply to current x
+                            x_aux = (x - velocity * dt_val) + x_inter * dt_val  # "what if this layer was the output"
+                            aux_weight = 0.5 / max(n_blocks - 1, 1)  # weight intermediates at 50% of final
+                            total_aux_loss += F.mse_loss(x_aux, x_b).item() * aux_weight
+                    # Final MSE (full weight)
+                    final_loss = F.mse_loss(x, x_b).item()
+                    return final_loss + total_aux_loss
                 # Noise-scale curriculum: start with reduced noise for easier denoising
                 if args.noise_scale_start < 1.0:
                     _ns_progress = min(total_training_time / args.time_budget, 1.0)
@@ -1666,6 +1766,26 @@ if args.solver == "spsa":
                         velocity = model(x, t_tensor, class_labels=y_b)
                         x = x + velocity * dt
                     return F.mse_loss(x, x_b).item()
+                # Cascade-T: evaluate loss at every intermediate ODE step
+                if args.cascade_T and T > 1:
+                    dev = x_b.device
+                    gen = torch.Generator(device=dev)
+                    gen.manual_seed(noise_seed[0] + batch_idx)
+                    noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                    x = noise.clone()
+                    dt = 1.0 / T
+                    total_cascade_loss = 0.0
+                    for i in range(T):
+                        t_val = i / T
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity = model(x, t_tensor, class_labels=y_b)
+                        x = x + velocity * dt
+                        # Weight later steps more (they should be closer to target)
+                        weight = (i + 1) / T
+                        total_cascade_loss += F.mse_loss(x, x_b).item() * weight
+                    # Normalize by sum of weights
+                    weight_sum = sum((i + 1) / T for i in range(T))
+                    return total_cascade_loss / weight_sum
                 return flow_matching.denoising_loss(
                     model, x_b, class_labels=y_b,
                     denoising_steps=T,
@@ -2444,6 +2564,111 @@ if args.solver == "spsa":
                 tv = torch.mean(torch.abs(err[:, :, 1:, :] - err[:, :, :-1, :])) + \
                      torch.mean(torch.abs(err[:, :, :, 1:] - err[:, :, :, :-1]))
                 return (mse + 0.1 * tv).item()
+            elif loss_type == "denoising_weighted_multistep":
+                # Weighted multi-step denoising loss: compute MSE at EVERY ODE step
+                # with linearly increasing weights. Early steps get low weight (still noisy),
+                # later steps get high weight (should be close to target).
+                # This gives the optimizer gradient signal about intermediate trajectory quality,
+                # not just endpoint quality. Explicitly requested in program.md.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                weight_sum = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    # Linear weight: step 1 gets weight 1, step T gets weight T
+                    w = (i + 1)
+                    total_loss += F.mse_loss(x, x_b).item() * w
+                    weight_sum += w
+                return total_loss / weight_sum
+            elif loss_type == "denoising_endpoint_heavy":
+                # Endpoint-heavy multi-step loss: like weighted_multistep but with
+                # exponential weighting — final step dominates, early steps barely count.
+                # Weight_i = 2^i, so for T=4: weights are 1, 2, 4, 8 (final = 53% of total)
+                # This preserves the "endpoint MSE is king" signal while adding
+                # mild trajectory guidance from intermediate steps.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                weight_sum = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    # Exponential weight: 2^i
+                    w = 2.0 ** i
+                    total_loss += F.mse_loss(x, x_b).item() * w
+                    weight_sum += w
+                return total_loss / weight_sum
+            elif loss_type == "denoising_multistep_sqrt":
+                # Square-root weighted multi-step: sqrt(i+1) weighting
+                # Intermediate between linear and endpoint-heavy.
+                # For T=4: weights ~1.0, 1.41, 1.73, 2.0 (final = 32% of total)
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                weight_sum = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    w = _math.sqrt(i + 1)
+                    total_loss += F.mse_loss(x, x_b).item() * w
+                    weight_sum += w
+                return total_loss / weight_sum
+            elif loss_type == "denoising_ssim_endpoint":
+                # SSIM + MSE at denoising endpoint. SSIM is non-differentiable
+                # (uses windowed statistics), so this is zero-order exclusive.
+                # SSIM captures structural similarity that MSE misses.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse = F.mse_loss(x_f, y_f).item()
+                # Simple SSIM: windowed mean/var/covar over 8x8 patches
+                # Using avg_pool2d as a fast windowed mean approximation
+                C1, C2 = 0.01**2, 0.03**2  # stability constants (data in ~[-1,1])
+                k = 4  # window size for pooling
+                mu_x = F.avg_pool2d(x_f, k, stride=1, padding=k//2)
+                mu_y = F.avg_pool2d(y_f, k, stride=1, padding=k//2)
+                mu_x2 = mu_x * mu_x
+                mu_y2 = mu_y * mu_y
+                mu_xy = mu_x * mu_y
+                sigma_x2 = F.avg_pool2d(x_f * x_f, k, stride=1, padding=k//2) - mu_x2
+                sigma_y2 = F.avg_pool2d(y_f * y_f, k, stride=1, padding=k//2) - mu_y2
+                sigma_xy = F.avg_pool2d(x_f * y_f, k, stride=1, padding=k//2) - mu_xy
+                ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+                           ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2))
+                ssim_val = ssim_map.mean().item()  # in [-1, 1], higher = better
+                # Combine: MSE + (1-SSIM) scaled to be roughly same magnitude
+                return mse + 0.5 * (1.0 - ssim_val)
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
@@ -3042,13 +3267,21 @@ while True:
 
         # SPSA step — with optional per-perturbation hooks (T variation, noise variation, sub-batch)
         _pert_hook = None
-        _needs_hook = (args.t_schedule == "stochastic_pert") or args.multi_noise or args.pert_sub_batch > 0
+        _needs_hook = (args.t_schedule == "stochastic_pert") or args.multi_noise or args.pert_sub_batch > 0 or args.dual_t
+        _saved_curriculum_T = current_T[0]  # save the curriculum T before hook overrides
         if _needs_hook:
             _stoch_progress = min(total_training_time / args.time_budget, 1.0)
             _stoch_max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * _stoch_progress))
             def _pert_hook(pert_idx, iteration):
                 # Track perturbation index for sub-batch deterministic selection
                 _current_pert_idx[0] = pert_idx
+                if args.dual_t:
+                    # Dual-T: first half of perturbations at T=1, second half at curriculum T
+                    n_perts = trainer.n_perts
+                    if pert_idx < n_perts // 2:
+                        current_T[0] = args.t_min  # always T=1
+                    else:
+                        current_T[0] = _saved_curriculum_T  # curriculum T
                 if args.t_schedule == "stochastic_pert":
                     # Each perturbation gets a different T sampled from expanding range
                     _rng = random.Random(iteration * 10000 + pert_idx * 777 + 42)
@@ -3079,6 +3312,24 @@ while True:
             selfdistill_targets[0] = None  # No targets for first 100 steps
 
         train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
+
+        # Simulated annealing noise: add random perturbation every 500 steps
+        if args.sa_noise > 0 and step > 0 and step % 500 == 0:
+            _sa_progress = min(total_training_time / args.time_budget, 1.0)
+            # Decay noise strength as training progresses (like SA cooling)
+            _sa_scale = args.sa_noise * (1.0 - _sa_progress)
+            if _sa_scale > 1e-8:
+                for p in model.parameters():
+                    if p.requires_grad:
+                        p.data.add_(torch.randn_like(p.data) * _sa_scale)
+
+        # Loss-adaptive LR: scale LR proportional to current loss
+        if args.loss_lr_scale:
+            if not hasattr(args, '_loss_lr_ref'):
+                args._loss_lr_ref = train_loss_f  # reference loss from first step
+            if args._loss_lr_ref > 0:
+                loss_ratio = train_loss_f / args._loss_lr_ref
+                trainer.lr = args.lr * lrm * max(0.1, min(3.0, loss_ratio))
 
         # Checkpoint rollback: save good states, restore on divergence
         if args.checkpoint_rollback:
@@ -3182,6 +3433,19 @@ while True:
         # Asymmetric epsilon: scale epsilon when T > 1
         if args.eps_t_scale != 1.0 and current_T[0] > 1:
             trainer.epsilon *= args.eps_t_scale
+
+        # Temperature-dependent LR: reduce LR at higher T for less noisy updates
+        if args.lr_t_scale > 0 and current_T[0] > 1:
+            import math as _math
+            trainer.lr /= current_T[0] ** args.lr_t_scale
+
+        # Restart-on-ramp: reset LR when T increases
+        if args.restart_on_ramp:
+            if not hasattr(args, '_prev_T'):
+                args._prev_T = current_T[0]
+            if current_T[0] > args._prev_T:
+                trainer.lr = args.lr  # full LR restart
+                args._prev_T = current_T[0]
 
         # Adaptive search: plateau/divergence detection
         if args.search_strategy != "none":
