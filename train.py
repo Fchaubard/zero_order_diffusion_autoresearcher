@@ -125,7 +125,7 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive", "curriculum_weighted"],
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive", "curriculum_weighted", "curriculum_smooth"],
     help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
@@ -171,7 +171,7 @@ spsa_group.add_argument("--augment-fixed", action="store_true",
 spsa_group.add_argument("--forward-fd", action="store_true",
     help="Use forward-difference SPSA instead of central-difference (1 eval per pert instead of 2, ~2x faster)")
 spsa_group.add_argument("--eps-schedule", type=str, default="fixed",
-    choices=["fixed", "cosine_decay", "linear_decay", "linear_warmup", "t_coupled"],
+    choices=["fixed", "cosine_decay", "linear_decay", "linear_warmup", "t_coupled", "adaptive_var"],
     help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), "
          "linear_decay (eps-max -> epsilon linearly), linear_warmup (eps-min -> epsilon over warmup), "
          "t_coupled (scale epsilon by sqrt(T) during curriculum ramp — maintains gradient SNR as T increases)")
@@ -251,6 +251,26 @@ spsa_group.add_argument("--freeze-pattern", type=str, default="",
     help="Comma-separated patterns of module names to freeze (exclude from SPSA perturbation). "
          "E.g., 'label_embed,time_embed' freezes conditioning layers. "
          "'blocks.0' freezes first transformer block. Empty=train all.")
+spsa_group.add_argument("--pert-sub-batch", type=int, default=0,
+    help="Number of images to evaluate per perturbation (0=full batch). "
+         "E.g., 16 means each perturbation evaluates on 16 random images from the fixed batch. "
+         "Enables more perturbations for same compute: if batch=48 and sub-batch=16, "
+         "you can run 3x more perts (--n-perts 300) in the same time.")
+spsa_group.add_argument("--block-cyclic", action="store_true",
+    help="Block-cyclic SPSA: each step only perturbs one parameter group (cycling through). "
+         "Reduces perturbation dimensionality for better gradient estimates per group. "
+         "Groups cycle: patch_embed, pos_embed, time_embed, label_embed, blocks.0, blocks.1, final")
+spsa_group.add_argument("--noise-scale-start", type=float, default=1.0,
+    help="Initial noise scale for noise magnitude curriculum (1.0=standard gaussian). "
+         "E.g., 0.5 = start with half-strength noise for easier denoising. "
+         "Linearly ramps to 1.0 over the curriculum fraction.")
+spsa_group.add_argument("--eps-t-scale", type=float, default=1.0,
+    help="Scale epsilon by this factor when T > 1 (1.0=no scaling). "
+         "E.g., 0.5 = use half epsilon at higher T (smaller perturbations when loss landscape is rougher).")
+spsa_group.add_argument("--double-dip", action="store_true",
+    help="Double-dip training: after completing the curriculum, restart from T=1 "
+         "with the learned weights for a second curriculum cycle. Uses warmdown only at the end "
+         "of the second cycle. Doubles effective training by restarting curriculum.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -715,6 +735,7 @@ class SPSATrainer:
             g.zero_()
 
         total_loss = 0.0
+        _all_pert_losses = []  # per-perturbation losses for variance tracking
 
         # For forward-FD or 1.5-SPSA, get clean loss once per iteration
         if self.use_curvature or self.forward_fd:
@@ -836,6 +857,8 @@ class SPSATrainer:
             else:
                 total_loss += (loss_plus + loss_minus) / 2
                 pert_avg_loss = (loss_plus + loss_minus) / 2
+
+            _all_pert_losses.append(pert_avg_loss)
 
             # Track per-perturbation loss for elite selection
             if self.elite_perts > 0:
@@ -984,6 +1007,11 @@ class SPSATrainer:
                     powers = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device='cuda', dtype=torch.uint8)
                     self.grad_ema_packed[:n_full // 8] = (sign_bytes * powers).sum(dim=1).to(torch.uint8)
                 self.grad_ema_initialized = True
+
+        # Track loss variance for adaptive epsilon
+        if _all_pert_losses:
+            import statistics
+            self._last_loss_std = statistics.stdev(_all_pert_losses) if len(_all_pert_losses) > 1 else 0.0
 
         return total_loss / self.n_perts
 
@@ -1538,10 +1566,24 @@ if args.solver == "spsa":
     # Self-distillation targets: computed once per step at unperturbed model
     selfdistill_targets = [None]  # Will hold target images from T=20 generation
 
+    # Sub-batch perturbation: track current perturbation index for deterministic subset selection
+    _current_pert_idx = [0]
+
     def spsa_loss_fn(batch_idx=0):
         """SPSA training loss with multiple loss type options."""
         T = current_T[0]  # Dynamic T, set per training step
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
+
+        # Sub-batch: select random subset of images for this perturbation
+        if args.pert_sub_batch > 0 and x_b.shape[0] > args.pert_sub_batch:
+            n_img = x_b.shape[0]
+            sub_n = args.pert_sub_batch
+            # Deterministic selection based on pert index (consistent across +ε and -ε)
+            _sub_rng = torch.Generator()
+            _sub_rng.manual_seed(_current_pert_idx[0] * 7919 + step * 31 + batch_idx)
+            indices = torch.randperm(n_img, generator=_sub_rng)[:sub_n]
+            x_b = x_b[indices]
+            y_b = y_b[indices]
 
         # Loss warmup: use denoising MSE for first loss_warmup_frac of training
         # This provides strong gradient signal when model output is noise,
@@ -2822,6 +2864,27 @@ while True:
                 if progress < b:
                     current_T[0] = args.t_min + i
                     break
+        elif args.t_schedule == "curriculum_smooth":
+            # Smooth curriculum: instead of discrete T jumps, use stochastic rounding
+            # At fractional T (e.g., 1.7), use T=2 with prob 0.7 and T=1 with prob 0.3
+            # This creates a smooth expected loss transition, preventing divergence spikes
+            # at T boundaries. The model gets gradual exposure to harder T values.
+            progress = min(total_training_time / args.time_budget, 1.0)
+            cf = args.curriculum_frac
+            pf = args.curriculum_polish if hasattr(args, 'curriculum_polish') else 0.0
+            if pf > 0 and progress >= (1.0 - pf):
+                current_T[0] = args.t_min
+            elif progress < cf:
+                current_T[0] = args.t_min
+            else:
+                ramp_end = 1.0 - pf if pf > 0 else 1.0
+                ramp_progress = min((progress - cf) / (ramp_end - cf), 1.0)
+                frac_T = args.t_min + (args.t_max - args.t_min) * ramp_progress
+                T_low = max(1, int(frac_T))
+                T_high = min(T_low + 1, args.t_max)
+                p_high = frac_T - T_low  # probability of using T_high
+                _smooth_rng = random.Random(step * 31337 + 99)
+                current_T[0] = T_high if _smooth_rng.random() < p_high else T_low
         elif args.t_schedule == "adaptive":
             # Adaptive T: increase T when loss stabilizes at current T
             # Uses loss EMA slope to detect convergence, then bumps T
@@ -2900,13 +2963,15 @@ while True:
             min_perts = max(1, int(args.n_perts * args.adaptive_perts_min_frac))
             trainer.n_perts = max(min_perts, int(args.n_perts * (1 - (1 - args.adaptive_perts_min_frac) * progress_now)))
 
-        # SPSA step — with optional per-perturbation hooks (T variation, noise variation)
+        # SPSA step — with optional per-perturbation hooks (T variation, noise variation, sub-batch)
         _pert_hook = None
-        _needs_hook = (args.t_schedule == "stochastic_pert") or args.multi_noise
+        _needs_hook = (args.t_schedule == "stochastic_pert") or args.multi_noise or args.pert_sub_batch > 0
         if _needs_hook:
             _stoch_progress = min(total_training_time / args.time_budget, 1.0)
             _stoch_max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * _stoch_progress))
             def _pert_hook(pert_idx, iteration):
+                # Track perturbation index for sub-batch deterministic selection
+                _current_pert_idx[0] = pert_idx
                 if args.t_schedule == "stochastic_pert":
                     # Each perturbation gets a different T sampled from expanding range
                     _rng = random.Random(iteration * 10000 + pert_idx * 777 + 42)
@@ -3018,6 +3083,22 @@ while True:
                     # so larger perturbations are needed to measure the gradient signal.
                     import math as _math
                     trainer.epsilon = eps_lo * _math.sqrt(max(current_T[0], 1))
+                elif args.eps_schedule == "adaptive_var":
+                    # Adapt epsilon based on loss variance across perturbations.
+                    # High variance = high curvature = need smaller epsilon for precision.
+                    # Low variance = flat region = can use larger epsilon for exploration.
+                    if hasattr(trainer, '_last_loss_std') and trainer._last_loss_std is not None:
+                        std = trainer._last_loss_std
+                        # Target std: eps_lo corresponds to "normal" std
+                        # If std > 2x normal: halve epsilon; if std < 0.5x normal: double epsilon
+                        if not hasattr(trainer, '_loss_std_ema'):
+                            trainer._loss_std_ema = std
+                        else:
+                            trainer._loss_std_ema = 0.95 * trainer._loss_std_ema + 0.05 * std
+                        ratio = std / max(trainer._loss_std_ema, 1e-10)
+                        # Clamp epsilon between 0.25x and 4x base
+                        scale = max(0.25, min(4.0, 1.0 / ratio))
+                        trainer.epsilon = eps_lo * scale
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
 
