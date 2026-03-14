@@ -82,7 +82,7 @@ train_group.add_argument("--warmdown-ratio", type=float, default=0.3,
 train_group.add_argument("--final-lr-frac", type=float, default=0.0,
     help="Final LR as fraction of initial LR")
 train_group.add_argument("--lr-schedule", type=str, default="linear",
-    choices=["linear", "cosine"],
+    choices=["linear", "cosine", "cosine_warmdown"],
     help="LR decay schedule type (linear warmdown or cosine)")
 train_group.add_argument("--sigma-min", type=float, default=1e-4,
     help="Flow matching minimum variance for numerical stability")
@@ -171,8 +171,10 @@ spsa_group.add_argument("--augment-fixed", action="store_true",
 spsa_group.add_argument("--forward-fd", action="store_true",
     help="Use forward-difference SPSA instead of central-difference (1 eval per pert instead of 2, ~2x faster)")
 spsa_group.add_argument("--eps-schedule", type=str, default="fixed",
-    choices=["fixed", "cosine_decay", "linear_decay", "linear_warmup"],
-    help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), linear_decay (eps-max -> epsilon linearly), linear_warmup (eps-min -> epsilon over warmup period)")
+    choices=["fixed", "cosine_decay", "linear_decay", "linear_warmup", "t_coupled"],
+    help="Epsilon schedule: fixed (constant), cosine_decay (eps-max -> epsilon via cosine), "
+         "linear_decay (eps-max -> epsilon linearly), linear_warmup (eps-min -> epsilon over warmup), "
+         "t_coupled (scale epsilon by sqrt(T) during curriculum ramp — maintains gradient SNR as T increases)")
 spsa_group.add_argument("--eps-max", type=float, default=None,
     help="Starting epsilon for decay schedules (decays to --epsilon). Default: 10x epsilon")
 spsa_group.add_argument("--spsa-grad-clip", type=float, default=0.0,
@@ -1360,6 +1362,16 @@ def get_lr_multiplier(progress):
         else:
             decay_progress = (progress - args.warmup_ratio) / (1.0 - args.warmup_ratio)
             return args.final_lr_frac + 0.5 * (1.0 - args.final_lr_frac) * (1.0 + math.cos(math.pi * decay_progress))
+    elif args.lr_schedule == "cosine_warmdown":
+        # Linear warmup + constant + COSINE warmdown (spends more time near peak LR)
+        if progress < args.warmup_ratio:
+            return progress / args.warmup_ratio if args.warmup_ratio > 0 else 1.0
+        elif progress < 1.0 - args.warmdown_ratio:
+            return 1.0
+        else:
+            # Cosine decay from 1.0 to final_lr_frac
+            wd_progress = (progress - (1.0 - args.warmdown_ratio)) / args.warmdown_ratio
+            return args.final_lr_frac + 0.5 * (1.0 - args.final_lr_frac) * (1.0 + math.cos(math.pi * wd_progress))
     else:
         # Linear warmup + constant + linear warmdown
         if progress < args.warmup_ratio:
@@ -2750,6 +2762,12 @@ while True:
                         trainer.epsilon = eps_min + (eps_lo - eps_min) * (progress / 0.1)
                     else:
                         trainer.epsilon = eps_lo
+                elif args.eps_schedule == "t_coupled":
+                    # Scale epsilon by sqrt(current_T) — maintains gradient SNR as T increases.
+                    # With more denoising steps, the loss landscape is smoother per-parameter,
+                    # so larger perturbations are needed to measure the gradient signal.
+                    import math as _math
+                    trainer.epsilon = eps_lo * _math.sqrt(max(current_T[0], 1))
         else:
             lrm = trainer.lr / args.lr if args.lr > 0 else 1.0
 
