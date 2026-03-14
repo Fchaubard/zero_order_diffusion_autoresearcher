@@ -152,7 +152,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_weighted_multistep", "denoising_endpoint_heavy",
              "denoising_multistep_sqrt", "denoising_ssim_endpoint",
              "denoising_cosine_weighted", "denoising_patch_stats",
-             "denoising_trajectory_target"],
+             "denoising_trajectory_target", "denoising_fft",
+             "denoising_fft_mse", "denoising_grad_match"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -231,6 +232,9 @@ spsa_group.add_argument("--pert-recycle", type=int, default=1,
 spsa_group.add_argument("--median-clip", type=float, default=0.0,
     help="Clip SPSA gradient coefficients to ±k*median(|coeff|) across perturbations (0=disabled). "
          "Adaptive outlier removal: k=3 clips extreme perturbations without tuning absolute threshold.")
+spsa_group.add_argument("--winsorize-pct", type=float, default=0.0,
+    help="Winsorize SPSA gradient coefficients: clip top and bottom X%% of values to the "
+         "nearest non-clipped value. E.g. 0.05 = trim top/bottom 5%%. Robust outlier handling.")
 spsa_group.add_argument("--spsa-topk", type=float, default=0.0,
     help="Fraction of perturbations to use for gradient estimation (0=disabled, 0.5=top 50%%). "
          "Selects perturbations with largest |loss_diff|, discarding noisy low-signal ones. "
@@ -314,6 +318,18 @@ spsa_group.add_argument("--restart-on-ramp", action="store_true",
     help="Reset LR to initial value when T increases during curriculum ramp. "
          "Gives a fresh high-LR start for each new T value, like cosine restart. "
          "Combined with warmdown, this gives each T phase its own mini-training schedule.")
+spsa_group.add_argument("--progressive-unfreeze", action="store_true",
+    help="Progressive unfreezing: start training with only output layers trainable, "
+         "gradually unfreeze more layers. In zero-order, fewer params = better gradient "
+         "estimates per perturbation. Schedule: 0-33%% output+block1, 33-100%% all params.")
+spsa_group.add_argument("--ffd-warmup", type=float, default=0.0,
+    help="Forward-FD warmup: use forward-difference SPSA for first N%% of training "
+         "(1 eval per pert = ~2x faster), then switch to central-difference. "
+         "E.g., 0.3 = FFD for first 30%%, central for remaining 70%%.")
+spsa_group.add_argument("--loss-mix", type=str, default="",
+    help="Mix of loss functions with weights, e.g., 'denoising:0.7,denoising_fft:0.3'. "
+         "Evaluates multiple losses per perturbation and combines them. "
+         "Provides richer gradient signal than any single loss.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -678,7 +694,7 @@ class SPSATrainer:
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
                  pert_recycle=1, median_clip=0.0, antithetic=False,
-                 loss_explosion_guard=False, topk=0.0):
+                 loss_explosion_guard=False, topk=0.0, winsorize_pct=0.0):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -703,6 +719,7 @@ class SPSATrainer:
         self.antithetic = antithetic
         self.loss_explosion_guard = loss_explosion_guard
         self.topk = topk  # fraction of perturbations to keep (0 = all)
+        self.winsorize_pct = winsorize_pct
         self.elite_perts = 0  # set from args after construction
         self._elite_seeds = []  # seeds of best perturbations from last step
         self.sign_consensus = 0  # set from args after construction
@@ -919,8 +936,8 @@ class SPSATrainer:
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            if self.median_clip > 0 or self.topk > 0:
-                # Deferred accumulation: store coefficients for median clipping or top-K later
+            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0:
+                # Deferred accumulation: store coefficients for median clipping, top-K, or winsorization
                 if not hasattr(self, '_deferred_coeffs'):
                     self._deferred_coeffs = []
                 self._deferred_coeffs.append(grad_coeff)
@@ -954,7 +971,7 @@ class SPSATrainer:
             self._elite_seeds = [seed for _, seed in _pert_losses[:self.elite_perts]]
 
         # Deferred gradient accumulation: replay perturbations with processed coefficients
-        if (self.median_clip > 0 or self.topk > 0) and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
+        if (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0) and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
             coeffs = self._deferred_coeffs
             abs_coeffs = [abs(c) for c in coeffs]
 
@@ -974,6 +991,15 @@ class SPSATrainer:
                     median_val = live_abs[len(live_abs) // 2]
                     clip_val = self.median_clip * median_val
                     coeffs = [max(-clip_val, min(clip_val, c)) for c in coeffs]
+
+            # Apply winsorization: clip top/bottom X% to nearest non-clipped value
+            if self.winsorize_pct > 0:
+                sorted_coeffs = sorted(coeffs)
+                n = len(sorted_coeffs)
+                k = max(1, int(n * self.winsorize_pct))
+                lo_clip = sorted_coeffs[k]
+                hi_clip = sorted_coeffs[n - 1 - k]
+                coeffs = [max(lo_clip, min(hi_clip, c)) for c in coeffs]
 
             # Second pass: regenerate perturbations and accumulate with processed coefficients
             for pert_idx, coeff in enumerate(coeffs):
@@ -1586,7 +1612,46 @@ else:
         antithetic=args.antithetic,
         loss_explosion_guard=args.loss_explosion_guard,
         topk=args.spsa_topk,
+        winsorize_pct=args.winsorize_pct,
     )
+    # Progressive unfreezing: initially freeze early layers
+    if args.progressive_unfreeze:
+        # Freeze blocks.0 and embedding layers initially, train only blocks.1 + output
+        _unfreeze_phases = [
+            # Phase 0 (0-33%): only blocks.1, final_adaLN, final_proj
+            {"freeze": ["blocks.0", "patch_embed", "pos_embed", "time_embed", "label_embed"]},
+            # Phase 1 (33-100%): everything trainable
+            {"freeze": []},
+        ]
+        _current_phase = [0]
+        # Apply initial freeze
+        for name, param in model.named_parameters():
+            if any(pat in name for pat in _unfreeze_phases[0]["freeze"]):
+                param.requires_grad = False
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"  Progressive unfreeze phase 0: {trainable:,}/{total_params:,} params trainable")
+        # Rebuild trainer with current trainable params
+        trainer = SPSATrainer(
+            model=model, lr=args.lr, epsilon=SPSA_EPSILON,
+            n_perts=args.n_perts, use_curvature=args.use_curvature,
+            saturating_alpha=args.saturating_alpha, lambda_reg=args.lambda_reg,
+            memory_efficient=args.memory_efficient,
+            accum_steps=args.spsa_accum_steps, weight_decay=args.spsa_weight_decay,
+            layerwise=args.layerwise_spsa,
+            use_adam=args.spsa_adam, adam_beta1=args.spsa_adam_beta1,
+            adam_beta2=args.spsa_adam_beta2,
+            grad_clip=args.spsa_grad_clip,
+            forward_fd=args.forward_fd,
+            guided_pert=args.guided_pert,
+            sign_update=args.sign_update,
+            pert_recycle=args.pert_recycle,
+            median_clip=args.median_clip,
+            antithetic=args.antithetic,
+            loss_explosion_guard=args.loss_explosion_guard,
+            topk=args.spsa_topk,
+            winsorize_pct=args.winsorize_pct,
+        )
     if args.elite_perts > 0:
         trainer.elite_perts = args.elite_perts
         print(f"  Elite perturbations: {args.elite_perts} seeds carried over each step")
@@ -2757,6 +2822,75 @@ if args.solver == "spsa":
                     total_loss += F.mse_loss(x, x_ideal).item() * w
                     weight_sum += w
                 return total_loss / weight_sum
+            elif loss_type == "denoising_fft":
+                # FFT loss in denoising pipeline: compare frequency spectra
+                # Zero-order exclusive — FFT is not easily differentiable
+                # Log-magnitude spectrum captures perceptual structure
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                fft_gen = torch.fft.fft2(x_f)
+                fft_real = torch.fft.fft2(y_f)
+                log_mag_gen = torch.log1p(torch.abs(fft_gen))
+                log_mag_real = torch.log1p(torch.abs(fft_real))
+                return F.mse_loss(log_mag_gen, log_mag_real).item()
+            elif loss_type == "denoising_fft_mse":
+                # Combined MSE + FFT loss: pixel accuracy + frequency structure
+                # 70% MSE + 30% FFT for balanced optimization
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                mse = F.mse_loss(x, x_b).item()
+                x_f = x.float()
+                y_f = x_b.float()
+                fft_gen = torch.fft.fft2(x_f)
+                fft_real = torch.fft.fft2(y_f)
+                log_mag_gen = torch.log1p(torch.abs(fft_gen))
+                log_mag_real = torch.log1p(torch.abs(fft_real))
+                fft_loss = F.mse_loss(log_mag_gen, log_mag_real).item()
+                return 0.7 * mse + 0.3 * fft_loss
+            elif loss_type == "denoising_grad_match":
+                # Gradient matching loss: compare spatial gradients (edges/textures)
+                # Zero-order exclusive — Sobel-like edge detection as loss
+                # Captures structural similarity that MSE misses
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Spatial gradients (horizontal + vertical differences)
+                dx_pred = x[:, :, :, 1:] - x[:, :, :, :-1]  # horizontal
+                dy_pred = x[:, :, 1:, :] - x[:, :, :-1, :]  # vertical
+                dx_target = x_b[:, :, :, 1:] - x_b[:, :, :, :-1]
+                dy_target = x_b[:, :, 1:, :] - x_b[:, :, :-1, :]
+                grad_loss = (F.mse_loss(dx_pred, dx_target).item() +
+                             F.mse_loss(dy_pred, dy_target).item()) / 2
+                mse = F.mse_loss(x, x_b).item()
+                return 0.5 * mse + 0.5 * grad_loss
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
@@ -3347,6 +3481,52 @@ while True:
                         torch.cat([fb[1] for fb in fixed_buffer], dim=0),
                     )
 
+        # Progressive unfreezing: unfreeze more params as training progresses
+        if args.progressive_unfreeze:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            new_phase = 0 if progress_now < 0.33 else 1
+            if new_phase != _current_phase[0]:
+                _current_phase[0] = new_phase
+                # Unfreeze all params
+                for p in model.parameters():
+                    p.requires_grad = True
+                # Apply new freeze pattern
+                for name, param in model.named_parameters():
+                    if any(pat in name for pat in _unfreeze_phases[new_phase]["freeze"]):
+                        param.requires_grad = False
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total_params = sum(p.numel() for p in model.parameters())
+                print(f"  Progressive unfreeze phase {new_phase}: {trainable:,}/{total_params:,} params trainable")
+                # Rebuild trainer with new param set
+                old_lr = trainer.lr
+                trainer = SPSATrainer(
+                    model=model, lr=old_lr, epsilon=SPSA_EPSILON,
+                    n_perts=args.n_perts, use_curvature=args.use_curvature,
+                    saturating_alpha=args.saturating_alpha, lambda_reg=args.lambda_reg,
+                    memory_efficient=args.memory_efficient,
+                    accum_steps=args.spsa_accum_steps, weight_decay=args.spsa_weight_decay,
+                    layerwise=args.layerwise_spsa,
+                    use_adam=args.spsa_adam, adam_beta1=args.spsa_adam_beta1,
+                    adam_beta2=args.spsa_adam_beta2,
+                    grad_clip=args.spsa_grad_clip,
+                    forward_fd=args.forward_fd,
+                    guided_pert=args.guided_pert,
+                    sign_update=args.sign_update,
+                    pert_recycle=args.pert_recycle,
+                    median_clip=args.median_clip,
+                    antithetic=args.antithetic,
+                    loss_explosion_guard=args.loss_explosion_guard,
+                    topk=args.spsa_topk,
+                    winsorize_pct=args.winsorize_pct,
+                )
+                if args.sparse_pert > 0:
+                    trainer.sparse_pert = args.sparse_pert
+
+        # Forward-FD warmup: use forward-difference for early training, central for rest
+        if args.ffd_warmup > 0:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            trainer.forward_fd = (progress_now < args.ffd_warmup)
+
         # Adaptive perturbation count: decay n_perts over training
         if args.adaptive_perts:
             progress_now = min(total_training_time / args.time_budget, 1.0)
@@ -3424,16 +3604,20 @@ while True:
             if not hasattr(args, '_ckpt_state'):
                 args._ckpt_state = {n: p.data.clone() for n, p in model.named_parameters()}
                 args._ckpt_loss_ema = train_loss_f
+                args._ckpt_saved_ema = train_loss_f
                 args._ckpt_step = step
                 args._ckpt_lr = trainer.lr
                 args._rollback_count = 0
             else:
-                args._ckpt_loss_ema = 0.99 * args._ckpt_loss_ema + 0.01 * train_loss_f
+                # Only update EMA when not in divergence detection mode
+                if args._rollback_count == 0:
+                    args._ckpt_loss_ema = 0.99 * args._ckpt_loss_ema + 0.01 * train_loss_f
                 # Save checkpoint every 200 steps if loss is stable
                 if step % 200 == 0 and train_loss_f < 1.5 * args._ckpt_loss_ema:
                     args._ckpt_state = {n: p.data.clone() for n, p in model.named_parameters()}
                     args._ckpt_step = step
                     args._ckpt_lr = trainer.lr
+                    args._ckpt_saved_ema = args._ckpt_loss_ema  # remember EMA at checkpoint time
                 # Detect divergence: loss > 1.5x EMA
                 if train_loss_f > 1.5 * args._ckpt_loss_ema and step > 100:
                     args._rollback_count += 1
@@ -3445,7 +3629,8 @@ while True:
                                 p.data.copy_(args._ckpt_state[n])
                         trainer.lr = max(trainer.lr / 2, 1e-4)
                         args._rollback_count = 0
-                        args._ckpt_loss_ema = train_loss_f * 0.8  # Reset EMA higher to avoid immediate re-trigger
+                        # Reset EMA to checkpoint-era value, NOT the exploded loss
+                        args._ckpt_loss_ema = getattr(args, '_ckpt_saved_ema', args._ckpt_loss_ema)
                 else:
                     args._rollback_count = 0
 
