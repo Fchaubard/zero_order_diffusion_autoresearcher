@@ -146,7 +146,9 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_multiscale", "denoising_heun", "denoising_cosine_steps",
              "denoising_warm_restart", "denoising_selfdistill",
              "ssim_mse_light", "mse_clamp2",
-             "denoising_discrete", "denoising_multires", "denoising_huber"],
+             "denoising_discrete", "denoising_multires", "denoising_huber",
+             "denoising_lowres", "denoising_mae",
+             "denoising_edge", "denoising_tv"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -199,6 +201,9 @@ spsa_group.add_argument("--batch-trickle-interval", type=int, default=0,
     help="If > 0, replace 1 random image in fixed batch every N steps. Gradual replacement "
          "avoids the distribution shift that causes full batch-refresh to diverge. "
          "E.g., 200 = replace 1/48 images every 200 steps, full turnover in ~9600 steps.")
+spsa_group.add_argument("--loss-explosion-guard", action="store_true",
+    help="Skip gradient updates when loss spikes >2x the running EMA. "
+         "Prevents divergence from bad SPSA gradient estimates.")
 spsa_group.add_argument("--swa-frac", type=float, default=0.0,
     help="If > 0, perform Stochastic Weight Averaging over the last swa_frac of training. "
          "E.g., 0.1 = average weights from 90%% to 100%% of training. Uses uniform average "
@@ -216,6 +221,10 @@ spsa_group.add_argument("--pert-recycle", type=int, default=1,
 spsa_group.add_argument("--median-clip", type=float, default=0.0,
     help="Clip SPSA gradient coefficients to ±k*median(|coeff|) across perturbations (0=disabled). "
          "Adaptive outlier removal: k=3 clips extreme perturbations without tuning absolute threshold.")
+spsa_group.add_argument("--freeze-pattern", type=str, default="",
+    help="Comma-separated patterns of module names to freeze (exclude from SPSA perturbation). "
+         "E.g., 'label_embed,time_embed' freezes conditioning layers. "
+         "'blocks.0' freezes first transformer block. Empty=train all.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -566,7 +575,8 @@ class SPSATrainer:
                  accum_steps, weight_decay, layerwise=False,
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
-                 pert_recycle=1, median_clip=0.0, antithetic=False):
+                 pert_recycle=1, median_clip=0.0, antithetic=False,
+                 loss_explosion_guard=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -589,6 +599,8 @@ class SPSATrainer:
         self.median_clip = median_clip
         self.sign_update = sign_update
         self.antithetic = antithetic
+        self.loss_explosion_guard = loss_explosion_guard
+        self._loss_ema = None  # EMA of loss for explosion detection
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -804,6 +816,18 @@ class SPSATrainer:
                         info['numel'], clipped, BLOCK_SIZE=TRITON_BLOCK_SIZE)
                 del packed
             self._deferred_coeffs = []
+
+        # Loss explosion guard: if loss spikes >2x the EMA, skip this update
+        avg_loss = total_loss / self.n_perts
+        if self.loss_explosion_guard:
+            if self._loss_ema is None:
+                self._loss_ema = avg_loss
+            else:
+                if avg_loss > 2.0 * self._loss_ema:
+                    # Loss exploded — skip gradient update, restore EMA slowly
+                    self._loss_ema = 0.95 * self._loss_ema + 0.05 * avg_loss
+                    return avg_loss  # Return loss but don't update parameters
+                self._loss_ema = 0.99 * self._loss_ema + 0.01 * avg_loss
 
         # Apply update
         if self.use_adam and self.m is not None:
@@ -1285,6 +1309,16 @@ else:
     model.eval()
     for p in model.parameters():
         p.requires_grad = True
+    # Freeze specified modules (reduce SPSA dimensionality)
+    if args.freeze_pattern:
+        freeze_patterns = [pat.strip() for pat in args.freeze_pattern.split(",")]
+        frozen_count = 0
+        for name, param in model.named_parameters():
+            if any(pat in name for pat in freeze_patterns):
+                param.requires_grad = False
+                frozen_count += param.numel()
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"  Frozen {frozen_count:,} params ({len(freeze_patterns)} patterns). Trainable: {trainable:,}")
     trainer = SPSATrainer(
         model=model, lr=args.lr, epsilon=SPSA_EPSILON,
         n_perts=args.n_perts, use_curvature=args.use_curvature,
@@ -1301,6 +1335,7 @@ else:
         pert_recycle=args.pert_recycle,
         median_clip=args.median_clip,
         antithetic=args.antithetic,
+        loss_explosion_guard=args.loss_explosion_guard,
     )
 
 train_loader = make_dataloader("train", args.device_batch_size)
@@ -2089,6 +2124,90 @@ if args.solver == "spsa":
                 x_f = x.float()
                 y_f = x_b.float()
                 return F.huber_loss(x_f, y_f, delta=0.5).item()
+            elif loss_type == "denoising_lowres":
+                # MSE on 2× downscaled images — smoother loss landscape
+                # Helps early training by ignoring fine detail
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = F.avg_pool2d(x.float(), 2)
+                y_f = F.avg_pool2d(x_b.float(), 2)
+                return F.mse_loss(x_f, y_f).item()
+            elif loss_type == "denoising_mae":
+                # Mean Absolute Error — L1 loss, robust to outlier pixels
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                return F.l1_loss(x_f, y_f).item()
+            elif loss_type == "denoising_edge":
+                # MSE + gradient-domain (edge) loss
+                # Computes spatial gradients (finite differences) of both predicted and target,
+                # then adds MSE on the gradients. This emphasizes edge accuracy which directly
+                # impacts FID — sharper edges = better perceived quality.
+                # Zero-order exclusive: gradient-domain loss is non-differentiable through ODE.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                # Pixel loss
+                mse = F.mse_loss(x_f, y_f)
+                # Edge loss: finite-difference spatial gradients
+                dx_pred = x_f[:, :, 1:, :] - x_f[:, :, :-1, :]
+                dx_targ = y_f[:, :, 1:, :] - y_f[:, :, :-1, :]
+                dy_pred = x_f[:, :, :, 1:] - x_f[:, :, :, :-1]
+                dy_targ = y_f[:, :, :, 1:] - y_f[:, :, :, :-1]
+                edge = F.mse_loss(dx_pred, dx_targ) + F.mse_loss(dy_pred, dy_targ)
+                return (mse + 0.5 * edge).item()
+            elif loss_type == "denoising_tv":
+                # Total variation regularized denoising loss
+                # MSE + TV penalty on predicted image. TV encourages piecewise-smooth
+                # outputs, reducing noise/artifacts from imperfect denoising.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                mse = F.mse_loss(x_f, y_f)
+                # TV of the ERROR, not the image — penalizes spatially-correlated errors
+                err = x_f - y_f
+                tv = torch.mean(torch.abs(err[:, :, 1:, :] - err[:, :, :-1, :])) + \
+                     torch.mean(torch.abs(err[:, :, :, 1:] - err[:, :, :, :-1]))
+                return (mse + 0.1 * tv).item()
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
