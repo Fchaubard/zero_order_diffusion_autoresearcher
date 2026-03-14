@@ -151,7 +151,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_edge", "denoising_tv",
              "denoising_weighted_multistep", "denoising_endpoint_heavy",
              "denoising_multistep_sqrt", "denoising_ssim_endpoint",
-             "denoising_cosine_weighted", "denoising_patch_stats"],
+             "denoising_cosine_weighted", "denoising_patch_stats",
+             "denoising_trajectory_target"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -2726,6 +2727,36 @@ if args.solver == "spsa":
                 var_loss = F.mse_loss(x_var, y_var).item()
                 # Weight: MSE dominates, patch stats add structural guidance
                 return mse + 0.3 * mean_loss + 0.1 * var_loss
+            elif loss_type == "denoising_trajectory_target":
+                # Trajectory-target loss: at each ODE step, compare the current
+                # state to what the IDEAL interpolation should look like.
+                # For flow matching, the ideal trajectory is:
+                #   x_ideal(t) = (1 - (1-sigma_min)*t) * noise + t * x_clean
+                # This gives per-step supervision with the CORRECT intermediate target,
+                # not just endpoint MSE. The model learns the right trajectory, not just
+                # the right endpoint.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                sigma_min = 1e-4  # flow matching sigma_min
+                total_loss = 0.0
+                weight_sum = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    # Ideal state at t_next = (i+1)/T
+                    t_next = (i + 1) / T
+                    x_ideal = t_next * x_b + (1 - (1 - sigma_min) * t_next) * noise
+                    # Weighted MSE: exponential weight for later steps
+                    w = 2.0 ** i
+                    total_loss += F.mse_loss(x, x_ideal).item() * w
+                    weight_sum += w
+                return total_loss / weight_sum
             elif loss_type == "fft":
                 # Frequency domain loss: penalize spectral differences
                 # NOT differentiable through ODE — zero-order exclusive!
