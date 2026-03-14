@@ -239,6 +239,10 @@ spsa_group.add_argument("--elite-perts", type=int, default=0,
     help="Number of elite perturbation seeds to carry over from previous step (0=disabled). "
          "Tracks the K best perturbation directions (lowest loss) and reuses them next step, "
          "filling remaining slots with fresh random perturbations. Exploits promising directions.")
+spsa_group.add_argument("--lr-layer-scale", action="store_true",
+    help="Scale learning rate per layer: deeper layers get smaller LR updates. "
+         "Linear decay from 2x (first layer) to 0.5x (last layer). "
+         "Matches update magnitude to layer sensitivity in SPSA.")
 spsa_group.add_argument("--sign-consensus", type=int, default=0,
     help="Only update parameters where gradient sign agrees over last K steps (0=disabled). "
          "Maintains a running sign buffer and masks out parameters with flipping signs. "
@@ -627,6 +631,7 @@ class SPSATrainer:
         self._elite_seeds = []  # seeds of best perturbations from last step
         self.sign_consensus = 0  # set from args after construction
         self._sign_history = None  # ring buffer of gradient signs
+        self.lr_layer_scale = False  # set from args after construction
         self._loss_ema = None  # EMA of loss for explosion detection
 
         self.params = [p for p in model.parameters() if p.requires_grad]
@@ -948,14 +953,16 @@ class SPSATrainer:
                     update = self.m[i] / (1 - self.adam_beta1 ** self.adam_step)
                 if self.weight_decay > 0:
                     update.add_(info['param'].data.view(-1).float(), alpha=self.weight_decay)
-                info['param'].data.view(-1).sub_(update, alpha=self.lr)
+                lr_i = self.lr * info.get('lr_scale', 1.0) if self.lr_layer_scale else self.lr
+                info['param'].data.view(-1).sub_(update, alpha=lr_i)
         else:
             # Plain SGD (optionally with sign update)
             for info, grad in zip(self.param_info, self.grads):
+                lr_i = self.lr * info.get('lr_scale', 1.0) if self.lr_layer_scale else self.lr
                 if self.sign_update:
-                    info['param'].data.view(-1).sub_(grad.sign(), alpha=self.lr)
+                    info['param'].data.view(-1).sub_(grad.sign(), alpha=lr_i)
                 else:
-                    info['param'].data.view(-1).sub_(grad, alpha=self.lr)
+                    info['param'].data.view(-1).sub_(grad, alpha=lr_i)
             if self.weight_decay > 0:
                 for info in self.param_info:
                     info['param'].data.mul_(1 - self.lr * self.weight_decay)
@@ -1446,6 +1453,15 @@ else:
     if args.sign_consensus > 0:
         trainer.sign_consensus = args.sign_consensus
         print(f"  Sign consensus: only update params with consistent sign over {args.sign_consensus} steps")
+    if args.lr_layer_scale:
+        trainer.lr_layer_scale = True
+        # Compute per-param LR scale: linearly from 2.0 (first param) to 0.5 (last param)
+        n_params = len(trainer.param_info)
+        for idx, info in enumerate(trainer.param_info):
+            frac = idx / max(n_params - 1, 1)  # 0 to 1
+            info['lr_scale'] = 2.0 - 1.5 * frac  # 2.0 -> 0.5
+        scales = [info['lr_scale'] for info in trainer.param_info]
+        print(f"  Layer-wise LR: scale {scales[0]:.2f}x -> {scales[-1]:.2f}x across {n_params} params")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -2820,15 +2836,19 @@ while True:
                 }
             st = args._adaptive_T_state
             st['steps_at_T'] += 1
-            if st['loss_ema'] is None:
-                st['loss_ema'] = train_loss_f
-                st['loss_ema_slow'] = train_loss_f
-            else:
-                st['loss_ema'] = 0.99 * st['loss_ema'] + 0.01 * train_loss_f
-                st['loss_ema_slow'] = 0.999 * st['loss_ema_slow'] + 0.001 * train_loss_f
+            # train_loss_f may not exist on first step (it's set after trainer.step())
+            _loss_val = train_loss_f if 'train_loss_f' in dir() else None
+            if _loss_val is not None:
+                if st['loss_ema'] is None:
+                    st['loss_ema'] = _loss_val
+                    st['loss_ema_slow'] = _loss_val
+                else:
+                    st['loss_ema'] = 0.99 * st['loss_ema'] + 0.01 * _loss_val
+                    st['loss_ema_slow'] = 0.999 * st['loss_ema_slow'] + 0.001 * _loss_val
             # Increase T if: loss EMA has converged (fast ≈ slow) AND enough steps at this T
             # AND haven't reached t_max AND still have training time left
-            converged = abs(st['loss_ema'] - st['loss_ema_slow']) < 0.005 * st['loss_ema_slow']
+            converged = (st['loss_ema'] is not None and st['loss_ema_slow'] is not None
+                         and abs(st['loss_ema'] - st['loss_ema_slow']) < 0.005 * st['loss_ema_slow'])
             if (converged and st['steps_at_T'] > st['min_steps']
                     and st['current_T'] < args.t_max and progress < 0.95):
                 st['current_T'] = min(st['current_T'] + 1, args.t_max)
