@@ -2837,7 +2837,10 @@ while True:
             st = args._adaptive_T_state
             st['steps_at_T'] += 1
             # train_loss_f may not exist on first step (it's set after trainer.step())
-            _loss_val = train_loss_f if 'train_loss_f' in dir() else None
+            try:
+                _loss_val = train_loss_f
+            except NameError:
+                _loss_val = None
             if _loss_val is not None:
                 if st['loss_ema'] is None:
                     st['loss_ema'] = _loss_val
