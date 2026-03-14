@@ -199,6 +199,10 @@ spsa_group.add_argument("--batch-trickle-interval", type=int, default=0,
     help="If > 0, replace 1 random image in fixed batch every N steps. Gradual replacement "
          "avoids the distribution shift that causes full batch-refresh to diverge. "
          "E.g., 200 = replace 1/48 images every 200 steps, full turnover in ~9600 steps.")
+spsa_group.add_argument("--swa-frac", type=float, default=0.0,
+    help="If > 0, perform Stochastic Weight Averaging over the last swa_frac of training. "
+         "E.g., 0.1 = average weights from 90%% to 100%% of training. Uses uniform average "
+         "(not exponential). Good for reducing evaluation variance from SPSA noise.")
 spsa_group.add_argument("--spsa-adam", action="store_true",
     help="Use Adam optimizer for SPSA gradient updates (momentum + adaptive LR)")
 spsa_group.add_argument("--spsa-adam-beta1", type=float, default=0.9,
@@ -2583,6 +2587,21 @@ while True:
 
         train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
 
+        # SWA: Stochastic Weight Averaging in the last swa_frac of training
+        if args.swa_frac > 0:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            if progress_now >= (1.0 - args.swa_frac):
+                if not hasattr(args, '_swa_state'):
+                    # Initialize SWA: deep copy current weights
+                    import copy as _copy
+                    args._swa_state = {n: p.data.clone().float() for n, p in model.named_parameters()}
+                    args._swa_count = 1
+                else:
+                    # Running average: avg = avg + (new - avg) / count
+                    args._swa_count += 1
+                    for n, p in model.named_parameters():
+                        args._swa_state[n].add_((p.data.float() - args._swa_state[n]) / args._swa_count)
+
         # Update LR based on schedule (when not using search)
         progress = min(total_training_time / args.time_budget, 1.0)
         if args.search_strategy == "none":
@@ -2726,6 +2745,13 @@ if args.solver == "backprop" and ema_model is not None:
     print("Using EMA model for evaluation")
 else:
     model_for_eval = model._orig_mod.float() if hasattr(model, '_orig_mod') else model.float()
+
+# Apply SWA weights if available
+if hasattr(args, '_swa_state') and args._swa_state is not None:
+    print(f"Applying SWA weights (averaged {args._swa_count} checkpoints over last {args.swa_frac*100:.0f}% of training)")
+    for n, p in model_for_eval.named_parameters():
+        if n in args._swa_state:
+            p.data.copy_(args._swa_state[n])
 
 class Float32Wrapper(nn.Module):
     """Wrapper that ensures model output is always float32 for FID evaluation."""
