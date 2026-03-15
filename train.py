@@ -153,7 +153,10 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_multistep_sqrt", "denoising_ssim_endpoint",
              "denoising_cosine_weighted", "denoising_patch_stats",
              "denoising_trajectory_target", "denoising_fft",
-             "denoising_fft_mse", "denoising_grad_match"],
+             "denoising_fft_mse", "denoising_grad_match",
+             "denoising_mae_cosine", "denoising_mae_mse",
+             "denoising_flow_match", "denoising_flow_match_mae",
+             "denoising_gauss_legendre"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -235,6 +238,9 @@ spsa_group.add_argument("--median-clip", type=float, default=0.0,
 spsa_group.add_argument("--winsorize-pct", type=float, default=0.0,
     help="Winsorize SPSA gradient coefficients: clip top and bottom X%% of values to the "
          "nearest non-clipped value. E.g. 0.05 = trim top/bottom 5%%. Robust outlier handling.")
+spsa_group.add_argument("--richardson", action="store_true",
+    help="Richardson extrapolation: evaluate at ±eps AND ±2*eps to cancel O(eps²) bias. "
+         "Gives O(eps⁴) bias (e.g. eps=0.1 matches eps=0.01 standard). 2x forward passes.")
 spsa_group.add_argument("--spsa-topk", type=float, default=0.0,
     help="Fraction of perturbations to use for gradient estimation (0=disabled, 0.5=top 50%%). "
          "Selects perturbations with largest |loss_diff|, discarding noisy low-signal ones. "
@@ -259,6 +265,18 @@ spsa_group.add_argument("--sign-consensus", type=int, default=0,
     help="Only update parameters where gradient sign agrees over last K steps (0=disabled). "
          "Maintains a running sign buffer and masks out parameters with flipping signs. "
          "Reduces noise from unreliable SPSA gradient estimates at per-parameter level.")
+spsa_group.add_argument("--split-consensus", action="store_true",
+    help="Split perturbations into two independent groups and only update parameters "
+         "where both groups agree on gradient sign. Reduces noise at per-parameter level "
+         "within a single step (unlike sign-consensus which uses temporal history). "
+         "With 100 perts: group A (50 perts) and group B (50 perts) each estimate gradient. "
+         "Final gradient = average(A,B) where sign(A)==sign(B), else 0.")
+spsa_group.add_argument("--group-adaptive-lr", action="store_true",
+    help="Adaptive LR per parameter group based on gradient consistency across steps. "
+         "Tracks gradient alignment (cosine similarity) between consecutive steps for each group "
+         "(patch_embed, pos_embed, time_embed, blocks, etc). Groups with consistent gradient "
+         "direction get higher LR (faster progress), noisy groups get lower LR (prevent divergence). "
+         "LR scale range: 0.1x to 10x of base LR per group.")
 spsa_group.add_argument("--freeze-pattern", type=str, default="",
     help="Comma-separated patterns of module names to freeze (exclude from SPSA perturbation). "
          "E.g., 'label_embed,time_embed' freezes conditioning layers. "
@@ -330,6 +348,14 @@ spsa_group.add_argument("--loss-mix", type=str, default="",
     help="Mix of loss functions with weights, e.g., 'denoising:0.7,denoising_fft:0.3'. "
          "Evaluates multiple losses per perturbation and combines them. "
          "Provides richer gradient signal than any single loss.")
+spsa_group.add_argument("--eps-decay", type=float, default=0.0,
+    help="Epsilon decay: anneal epsilon from initial value down to eps*eps_decay by end of training. "
+         "0 = no decay (fixed eps). 0.1 = decay to 10%% of initial eps. "
+         "Large eps early = coarse but stable gradients. Small eps late = fine-grained updates.")
+spsa_group.add_argument("--t-lr-scale", action="store_true",
+    help="Scale learning rate inversely with T: lr_eff = lr / sqrt(T). "
+         "At T=1 gradients are cleaner so bigger steps are safe. "
+         "At T=4 gradients are noisier so smaller steps prevent divergence. Zero extra cost.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -694,7 +720,8 @@ class SPSATrainer:
                  use_adam=False, adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
                  pert_recycle=1, median_clip=0.0, antithetic=False,
-                 loss_explosion_guard=False, topk=0.0, winsorize_pct=0.0):
+                 loss_explosion_guard=False, topk=0.0, winsorize_pct=0.0,
+                 richardson=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -720,6 +747,7 @@ class SPSATrainer:
         self.loss_explosion_guard = loss_explosion_guard
         self.topk = topk  # fraction of perturbations to keep (0 = all)
         self.winsorize_pct = winsorize_pct
+        self.richardson = richardson
         self.elite_perts = 0  # set from args after construction
         self._elite_seeds = []  # seeds of best perturbations from last step
         self.sign_consensus = 0  # set from args after construction
@@ -791,6 +819,13 @@ class SPSATrainer:
             self.grad_ema_initialized = False
         else:
             self.grad_ema_packed = None
+
+        # Split consensus state
+        self.split_consensus = False  # set from args after construction
+        # Group-adaptive LR state
+        self.group_adaptive_lr = False  # set from args after construction
+        self._prev_grads = None  # previous step's gradients (for cosine similarity)
+        self._group_lr_scale = None  # per-group LR multiplier
 
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
@@ -915,29 +950,74 @@ class SPSATrainer:
                     loss_minus += loss_fn(batch_idx)
                 loss_minus /= self.accum_steps
 
-                # Restore to original (+epsilon to undo the -2*epsilon)
-                for _pi, info in enumerate(self.param_info):
-                    if _sparse_active is not None and _pi not in _sparse_active:
-                        continue
-                    flat = info['param'].data.view(-1)
-                    _unpack_and_apply[info['grid']](
-                        flat, packed[info['packed_offset']:],
-                        info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                if self.richardson:
+                    # Richardson extrapolation: also evaluate at ±2*eps
+                    # Currently at w - eps*z. Apply -eps more → w - 2*eps*z
+                    for _pi, info in enumerate(self.param_info):
+                        if _sparse_active is not None and _pi not in _sparse_active:
+                            continue
+                        flat = info['param'].data.view(-1)
+                        _unpack_and_apply[info['grid']](
+                            flat, packed[info['packed_offset']:],
+                            info['numel'], -self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
 
-                # Compute gradient coefficient
-                if self.use_curvature:
-                    curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
-                    curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
-                    grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+                    loss_2minus = 0.0
+                    for batch_idx in range(self.accum_steps):
+                        loss_2minus += loss_fn(batch_idx)
+                    loss_2minus /= self.accum_steps
+
+                    # Go from w - 2*eps*z to w + 2*eps*z: apply +4*eps
+                    for _pi, info in enumerate(self.param_info):
+                        if _sparse_active is not None and _pi not in _sparse_active:
+                            continue
+                        flat = info['param'].data.view(-1)
+                        _unpack_and_apply[info['grid']](
+                            flat, packed[info['packed_offset']:],
+                            info['numel'], 4 * self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+                    loss_2plus = 0.0
+                    for batch_idx in range(self.accum_steps):
+                        loss_2plus += loss_fn(batch_idx)
+                    loss_2plus /= self.accum_steps
+
+                    # Restore to original: from w + 2*eps*z, apply -2*eps
+                    for _pi, info in enumerate(self.param_info):
+                        if _sparse_active is not None and _pi not in _sparse_active:
+                            continue
+                        flat = info['param'].data.view(-1)
+                        _unpack_and_apply[info['grid']](
+                            flat, packed[info['packed_offset']:],
+                            info['numel'], -2 * self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+                    # Richardson: (4*g_eps - g_2eps) / 3 cancels O(eps²) bias → O(eps⁴)
+                    # g_eps = (L+ - L-) / (2*eps), g_2eps = (L2+ - L2-) / (4*eps)
+                    g_eps = (loss_plus - loss_minus) / (2 * self.epsilon)
+                    g_2eps = (loss_2plus - loss_2minus) / (4 * self.epsilon)
+                    grad_coeff = (4 * g_eps - g_2eps) / (3 * self.n_perts)
                 else:
-                    grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
+                    # Restore to original (+epsilon to undo the -2*epsilon)
+                    for _pi, info in enumerate(self.param_info):
+                        if _sparse_active is not None and _pi not in _sparse_active:
+                            continue
+                        flat = info['param'].data.view(-1)
+                        _unpack_and_apply[info['grid']](
+                            flat, packed[info['packed_offset']:],
+                            info['numel'], self.epsilon, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+
+                    # Compute gradient coefficient
+                    if self.use_curvature:
+                        curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
+                        curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
+                        grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+                    else:
+                        grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
 
             # Clip gradient coefficient to prevent outlier perturbations from diverging
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0:
-                # Deferred accumulation: store coefficients for median clipping, top-K, or winsorization
+            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus:
+                # Deferred accumulation: store coefficients for median clipping, top-K, winsorization, or split consensus
                 if not hasattr(self, '_deferred_coeffs'):
                     self._deferred_coeffs = []
                 self._deferred_coeffs.append(grad_coeff)
@@ -971,12 +1051,13 @@ class SPSATrainer:
             self._elite_seeds = [seed for _, seed in _pert_losses[:self.elite_perts]]
 
         # Deferred gradient accumulation: replay perturbations with processed coefficients
-        if (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0) and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
+        _use_deferred = (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus)
+        if _use_deferred and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
             coeffs = self._deferred_coeffs
-            abs_coeffs = [abs(c) for c in coeffs]
 
             # Apply top-K filtering: zero out perturbations with smallest |loss_diff|
             if self.topk > 0:
+                abs_coeffs = [abs(c) for c in coeffs]
                 k = max(1, int(len(coeffs) * self.topk))
                 abs_sorted = sorted(abs_coeffs, reverse=True)
                 threshold = abs_sorted[min(k, len(abs_sorted)) - 1]
@@ -1001,37 +1082,82 @@ class SPSATrainer:
                 hi_clip = sorted_coeffs[n - 1 - k]
                 coeffs = [max(lo_clip, min(hi_clip, c)) for c in coeffs]
 
-            # Second pass: regenerate perturbations and accumulate with processed coefficients
-            for pert_idx, coeff in enumerate(coeffs):
-                if coeff == 0.0:
-                    continue  # Skip zeroed-out perturbations (top-K filtered)
-                seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
-                # Reconstruct same seed logic as the forward pass
-                _replay_elite = getattr(self, '_elite_seeds_snapshot', [])
-                if len(_replay_elite) > 0 and pert_idx < len(_replay_elite):
-                    pert_seed = _replay_elite[pert_idx]
-                    is_antithetic = False
-                elif self.antithetic and pert_idx >= self.n_perts // 2:
-                    base_idx = pert_idx - self.n_perts // 2
-                    pert_seed = seed_iter * 10000 + base_idx
-                    is_antithetic = True
-                else:
-                    pert_seed = seed_iter * 10000 + pert_idx
-                    is_antithetic = False
-                torch.manual_seed(pert_seed)
-                packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
-                if is_antithetic:
-                    packed = ~packed
-                if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
-                    guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
-                    threshold = int(self.guided_pert * 256)
-                    guide_mask = (guide_rand < threshold)
-                    packed = torch.where(guide_mask, self.grad_ema_packed, packed)
-                for i, info in enumerate(self.param_info):
-                    _unpack_and_accumulate[info['grid']](
-                        self.grads[i], packed[info['packed_offset']:],
-                        info['numel'], coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
-                del packed
+            if self.split_consensus:
+                # Split-consensus: accumulate first half and second half into separate buffers
+                mid = len(coeffs) // 2
+                grads_a = [torch.zeros_like(g) for g in self.grads]
+                grads_b = [torch.zeros_like(g) for g in self.grads]
+
+                for pert_idx, coeff in enumerate(coeffs):
+                    if coeff == 0.0:
+                        continue
+                    seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
+                    _replay_elite = getattr(self, '_elite_seeds_snapshot', [])
+                    if len(_replay_elite) > 0 and pert_idx < len(_replay_elite):
+                        pert_seed = _replay_elite[pert_idx]
+                        is_antithetic = False
+                    elif self.antithetic and pert_idx >= self.n_perts // 2:
+                        base_idx = pert_idx - self.n_perts // 2
+                        pert_seed = seed_iter * 10000 + base_idx
+                        is_antithetic = True
+                    else:
+                        pert_seed = seed_iter * 10000 + pert_idx
+                        is_antithetic = False
+                    torch.manual_seed(pert_seed)
+                    packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                    if is_antithetic:
+                        packed = ~packed
+                    if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
+                        guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                        threshold = int(self.guided_pert * 256)
+                        guide_mask = (guide_rand < threshold)
+                        packed = torch.where(guide_mask, self.grad_ema_packed, packed)
+                    # Accumulate into group A (first half) or group B (second half)
+                    target = grads_a if pert_idx < mid else grads_b
+                    for i, info in enumerate(self.param_info):
+                        _unpack_and_accumulate[info['grid']](
+                            target[i], packed[info['packed_offset']:],
+                            info['numel'], coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                    del packed
+
+                # Consensus masking: only update where both halves agree on sign
+                for i in range(len(self.grads)):
+                    agree = (grads_a[i].sign() == grads_b[i].sign())
+                    # Average the two gradient estimates, masked by agreement
+                    self.grads[i] = ((grads_a[i] + grads_b[i]) * 0.5) * agree.to(self.grads[i].dtype)
+                del grads_a, grads_b
+            else:
+                # Standard replay: regenerate perturbations and accumulate with processed coefficients
+                for pert_idx, coeff in enumerate(coeffs):
+                    if coeff == 0.0:
+                        continue  # Skip zeroed-out perturbations (top-K filtered)
+                    seed_iter = iteration // self.pert_recycle if self.pert_recycle > 1 else iteration
+                    # Reconstruct same seed logic as the forward pass
+                    _replay_elite = getattr(self, '_elite_seeds_snapshot', [])
+                    if len(_replay_elite) > 0 and pert_idx < len(_replay_elite):
+                        pert_seed = _replay_elite[pert_idx]
+                        is_antithetic = False
+                    elif self.antithetic and pert_idx >= self.n_perts // 2:
+                        base_idx = pert_idx - self.n_perts // 2
+                        pert_seed = seed_iter * 10000 + base_idx
+                        is_antithetic = True
+                    else:
+                        pert_seed = seed_iter * 10000 + pert_idx
+                        is_antithetic = False
+                    torch.manual_seed(pert_seed)
+                    packed = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                    if is_antithetic:
+                        packed = ~packed
+                    if self.guided_pert > 0 and self.grad_ema_packed is not None and self.grad_ema_initialized:
+                        guide_rand = torch.randint(0, 256, (self.packed_size,), device='cuda', dtype=torch.uint8)
+                        threshold = int(self.guided_pert * 256)
+                        guide_mask = (guide_rand < threshold)
+                        packed = torch.where(guide_mask, self.grad_ema_packed, packed)
+                    for i, info in enumerate(self.param_info):
+                        _unpack_and_accumulate[info['grid']](
+                            self.grads[i], packed[info['packed_offset']:],
+                            info['numel'], coeff, BLOCK_SIZE=TRITON_BLOCK_SIZE)
+                    del packed
             self._deferred_coeffs = []
 
         # Loss explosion guard: if loss spikes >2x the EMA, skip this update
@@ -1067,6 +1193,26 @@ class SPSATrainer:
                     mask = (sign_sum.abs() > 0.6 * K).to(grad.dtype)
                     self.grads[i] = grad * mask
 
+        # Group-adaptive LR: adjust per-group LR based on gradient consistency
+        if self.group_adaptive_lr and self.grads is not None:
+            if self._group_lr_scale is None:
+                self._group_lr_scale = [1.0] * len(self.grads)
+                self._prev_grads = [g.clone() for g in self.grads]
+            else:
+                for i, (prev, curr) in enumerate(zip(self._prev_grads, self.grads)):
+                    # Cosine similarity between previous and current gradient
+                    dot = (prev.float() * curr.float()).sum()
+                    norm_prev = prev.float().norm() + 1e-8
+                    norm_curr = curr.float().norm() + 1e-8
+                    cos_sim = (dot / (norm_prev * norm_curr)).item()
+                    # Adjust LR scale: align → increase, misalign → decrease
+                    if cos_sim > 0.1:
+                        self._group_lr_scale[i] = min(self._group_lr_scale[i] * 1.02, 5.0)
+                    elif cos_sim < -0.1:
+                        self._group_lr_scale[i] = max(self._group_lr_scale[i] * 0.95, 0.2)
+                    # Update previous gradient
+                    self._prev_grads[i] = curr.clone()
+
         # Apply update
         if self.use_adam and self.m is not None:
             self.adam_step += 1
@@ -1088,8 +1234,10 @@ class SPSATrainer:
                 info['param'].data.view(-1).sub_(update, alpha=lr_i)
         else:
             # Plain SGD (optionally with sign update)
-            for info, grad in zip(self.param_info, self.grads):
+            for i, (info, grad) in enumerate(zip(self.param_info, self.grads)):
                 lr_i = self.lr * info.get('lr_scale', 1.0) if self.lr_layer_scale else self.lr
+                if self.group_adaptive_lr and self._group_lr_scale is not None:
+                    lr_i *= self._group_lr_scale[i]
                 if self.sign_update:
                     info['param'].data.view(-1).sub_(grad.sign(), alpha=lr_i)
                 else:
@@ -1613,6 +1761,7 @@ else:
         loss_explosion_guard=args.loss_explosion_guard,
         topk=args.spsa_topk,
         winsorize_pct=args.winsorize_pct,
+        richardson=args.richardson,
     )
     # Progressive unfreezing: initially freeze early layers
     if args.progressive_unfreeze:
@@ -1651,6 +1800,7 @@ else:
             loss_explosion_guard=args.loss_explosion_guard,
             topk=args.spsa_topk,
             winsorize_pct=args.winsorize_pct,
+            richardson=args.richardson,
         )
     if args.elite_perts > 0:
         trainer.elite_perts = args.elite_perts
@@ -1673,6 +1823,12 @@ else:
             info['lr_scale'] = 2.0 - 1.5 * frac  # 2.0 -> 0.5
         scales = [info['lr_scale'] for info in trainer.param_info]
         print(f"  Layer-wise LR: scale {scales[0]:.2f}x -> {scales[-1]:.2f}x across {n_params} params")
+    if args.split_consensus:
+        trainer.split_consensus = True
+        print(f"  Split consensus: split {args.n_perts} perts into 2 groups, mask where signs disagree")
+    if args.group_adaptive_lr:
+        trainer.group_adaptive_lr = True
+        print(f"  Group-adaptive LR: per-group LR scale based on gradient consistency")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -1973,13 +2129,94 @@ if args.solver == "spsa":
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
                 noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                # Noise annealing: scale noise down early in training for easier denoising
+                if args.noise_scale_start < 1.0:
+                    _ns_progress = min(total_training_time / args.time_budget, 1.0)
+                    _ns_cf = getattr(args, 'curriculum_frac', 0.67)
+                    _ns_scale = args.noise_scale_start + (1.0 - args.noise_scale_start) * min(_ns_progress / _ns_cf, 1.0)
+                    noise = noise * _ns_scale
                 x = noise.clone()
                 # Generate cosine-spaced timesteps from 0 to 1
                 # t_i = 0.5 * (1 - cos(pi * i / T)) maps [0,T] -> [0,1] with clustering at endpoints
                 t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                if args.aux_loss:
+                    # Per-layer auxiliary loss: each block's activation decoded through
+                    # shared output head gives per-layer gradient signal. Early layers get
+                    # stronger signal because their perturbation affects all downstream aux losses.
+                    total_aux = 0.0
+                    n_blocks = len(model.blocks) * getattr(model.config, 'repeat_blocks', 1)
+                    for i in range(T):
+                        t_val = t_points[i]
+                        dt_i = t_points[i + 1] - t_points[i]
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity, intermediates = model(x, t_tensor, class_labels=y_b, return_intermediates=True)
+                        x = x + velocity * dt_i
+                        # Each intermediate is the velocity predicted by block j's output
+                        # decoded through the shared head. Compute aux MSE for each.
+                        for j, vel_j in enumerate(intermediates[:-1]):  # skip last = final output
+                            x_aux = (x - velocity * dt_i) + vel_j * dt_i
+                            aux_w = 0.5 / max(n_blocks - 1, 1)
+                            total_aux += F.mse_loss(x_aux, x_b).item() * aux_w
+                    return F.mse_loss(x, x_b).item() + total_aux
                 for i in range(T):
                     t_val = t_points[i]
                     dt_i = t_points[i + 1] - t_points[i]
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt_i
+                return F.mse_loss(x, x_b).item()
+            elif loss_type == "denoising_gauss_legendre":
+                # Gauss-Legendre quadrature: mathematically optimal node placement
+                # for numerical integration. Maps GL nodes from [-1,1] to [0,1].
+                # For small T (1-4), gives provably better ODE integration than
+                # uniform or cosine spacing.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                if args.noise_scale_start < 1.0:
+                    _ns_progress = min(total_training_time / args.time_budget, 1.0)
+                    _ns_cf = getattr(args, 'curriculum_frac', 0.67)
+                    _ns_scale = args.noise_scale_start + (1.0 - args.noise_scale_start) * min(_ns_progress / _ns_cf, 1.0)
+                    noise = noise * _ns_scale
+                x = noise.clone()
+                # Gauss-Legendre nodes and weights for T points on [0, 1]
+                # For small T, use hardcoded optimal values
+                if T == 1:
+                    t_nodes = [0.5]
+                    t_weights = [1.0]
+                elif T == 2:
+                    t_nodes = [0.5 - 0.5/_math.sqrt(3), 0.5 + 0.5/_math.sqrt(3)]
+                    t_weights = [0.5, 0.5]
+                elif T == 3:
+                    t_nodes = [0.5 - 0.5*_math.sqrt(3.0/5.0), 0.5, 0.5 + 0.5*_math.sqrt(3.0/5.0)]
+                    t_weights = [5.0/18.0, 8.0/18.0, 5.0/18.0]
+                elif T == 4:
+                    # 4-point GL nodes on [0,1]
+                    a = _math.sqrt(3.0/7.0 - 2.0/7.0*_math.sqrt(6.0/5.0))
+                    b = _math.sqrt(3.0/7.0 + 2.0/7.0*_math.sqrt(6.0/5.0))
+                    w1 = (18.0 + _math.sqrt(30.0)) / 72.0
+                    w2 = (18.0 - _math.sqrt(30.0)) / 72.0
+                    t_nodes = [0.5*(1-b), 0.5*(1-a), 0.5*(1+a), 0.5*(1+b)]
+                    t_weights = [w2/2, w1/2, w1/2, w2/2]
+                else:
+                    # Fallback to cosine spacing for T > 4
+                    t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                    for i in range(T):
+                        t_val = t_points[i]
+                        dt_i = t_points[i + 1] - t_points[i]
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity = model(x, t_tensor, class_labels=y_b)
+                        x = x + velocity * dt_i
+                    return F.mse_loss(x, x_b).item()
+                # Use GL nodes: evaluate velocity at each node, weight by GL weight
+                # For Euler-like integration: dt proportional to GL weight
+                # Sort nodes and create intervals
+                for i in range(len(t_nodes)):
+                    t_val = t_nodes[i]
+                    # dt_i = GL weight scaled to total interval [0,1]
+                    dt_i = t_weights[i]
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt_i
@@ -2580,6 +2817,80 @@ if args.solver == "spsa":
                 x_f = x.float()
                 y_f = x_b.float()
                 return F.l1_loss(x_f, y_f).item()
+            elif loss_type == "denoising_mae_cosine":
+                # MAE + cosine-spaced ODE steps: L1 loss with better ODE integration
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                for i in range(T):
+                    t_val = t_points[i]
+                    dt_i = t_points[i + 1] - t_points[i]
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt_i
+                return F.l1_loss(x.float(), x_b.float()).item()
+            elif loss_type == "denoising_mae_mse":
+                # 50% MAE + 50% MSE: combines L1 robustness with L2 smoothness
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                x_f = x.float()
+                y_f = x_b.float()
+                return 0.5 * F.l1_loss(x_f, y_f).item() + 0.5 * F.mse_loss(x_f, y_f).item()
+            elif loss_type == "denoising_flow_match":
+                # Flow-matching inspired: loss at EVERY ODE step against the ideal flow.
+                # The ideal flow from noise to target is linear: x*(t) = (1-t)*noise + t*target
+                # At each step, penalize deviation from ideal flow position.
+                # This gives gradient signal at EVERY ODE step, not just the endpoint.
+                # Unlike endpoint-only loss, early mistakes get directly penalized.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_next = (i + 1) / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    # Ideal position at t_next: linear interpolation
+                    x_ideal = (1.0 - t_next) * noise + t_next * x_b
+                    # Equal weight per step
+                    total_loss += F.mse_loss(x, x_ideal).item()
+                return total_loss / T
+            elif loss_type == "denoising_flow_match_mae":
+                # Same as flow_match but with L1 loss
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                total_loss = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_next = (i + 1) / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                    x_ideal = (1.0 - t_next) * noise + t_next * x_b
+                    total_loss += F.l1_loss(x.float(), x_ideal.float()).item()
+                return total_loss / T
             elif loss_type == "denoising_edge":
                 # MSE + gradient-domain (edge) loss
                 # Computes spatial gradients (finite differences) of both predicted and target,
@@ -3518,6 +3829,7 @@ while True:
                     loss_explosion_guard=args.loss_explosion_guard,
                     topk=args.spsa_topk,
                     winsorize_pct=args.winsorize_pct,
+                    richardson=args.richardson,
                 )
                 if args.sparse_pert > 0:
                     trainer.sparse_pert = args.sparse_pert
@@ -3711,6 +4023,16 @@ while True:
         if args.lr_t_scale > 0 and current_T[0] > 1:
             import math as _math
             trainer.lr /= current_T[0] ** args.lr_t_scale
+
+        # Epsilon decay: anneal epsilon from initial to eps*eps_decay over training
+        if args.eps_decay > 0:
+            eps_end = SPSA_EPSILON * args.eps_decay
+            trainer.epsilon = SPSA_EPSILON + (eps_end - SPSA_EPSILON) * progress
+
+        # T-conditional LR scaling: lr_eff = lr / sqrt(T)
+        if args.t_lr_scale and current_T[0] > 1:
+            import math as _math
+            trainer.lr = trainer.lr / _math.sqrt(current_T[0])
 
         # Restart-on-ramp: reset LR when T increases
         if args.restart_on_ramp:
