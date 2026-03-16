@@ -41,7 +41,7 @@ parser = argparse.ArgumentParser(
 
 # Solver selection
 solver_group = parser.add_argument_group("solver")
-solver_group.add_argument("--solver", type=str, default="backprop",
+solver_group.add_argument("--solver", type=str, default="spsa",
     choices=["backprop", "spsa"],
     help="Training solver: backprop (teacher-forced) or spsa (zero-order, no teacher forcing)")
 
@@ -112,6 +112,10 @@ spsa_group.add_argument("--epsilon", type=float, default=None,
     help="SPSA perturbation size (default: tied to --lr)")
 spsa_group.add_argument("--n-perts", type=int, default=40,
     help="Number of perturbations per SPSA step")
+spsa_group.add_argument("--n-perts-warmup", type=int, default=0,
+    help="Start with this many perturbations and linearly increase to --n-perts. "
+         "0=disabled (use fixed n-perts). E.g., --n-perts 100 --n-perts-warmup 20 "
+         "starts with 20 perts (faster steps, more total steps) and ramps to 100.")
 spsa_group.add_argument("--use-curvature", action="store_true",
     help="Enable 1.5-SPSA with curvature scaling")
 spsa_group.add_argument("--saturating-alpha", type=float, default=0.1,
@@ -156,7 +160,7 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_fft_mse", "denoising_grad_match",
              "denoising_mae_cosine", "denoising_mae_mse",
              "denoising_flow_match", "denoising_flow_match_mae",
-             "denoising_gauss_legendre"],
+             "denoising_gauss_legendre", "denoising_cosine_progressive"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
@@ -211,6 +215,11 @@ spsa_group.add_argument("--batch-trickle-interval", type=int, default=0,
     help="If > 0, replace 1 random image in fixed batch every N steps. Gradual replacement "
          "avoids the distribution shift that causes full batch-refresh to diverge. "
          "E.g., 200 = replace 1/48 images every 200 steps, full turnover in ~9600 steps.")
+spsa_group.add_argument("--fixed-batch-pool", type=int, default=0,
+    help="If > fixed_batch_size, load this many images into a pool and randomly sample "
+         "fixed_batch_size images each step. Reduces memorization while keeping SPSA "
+         "deterministic per step. E.g., --fixed-batch-pool 96 --fixed-batch-size 48 "
+         "means each step sees a random subset of 48 from 96 pre-loaded images.")
 spsa_group.add_argument("--loss-explosion-guard", action="store_true",
     help="Skip gradient updates when loss spikes >2x the running EMA. "
          "Prevents divergence from bad SPSA gradient estimates.")
@@ -238,6 +247,10 @@ spsa_group.add_argument("--median-clip", type=float, default=0.0,
 spsa_group.add_argument("--winsorize-pct", type=float, default=0.0,
     help="Winsorize SPSA gradient coefficients: clip top and bottom X%% of values to the "
          "nearest non-clipped value. E.g. 0.05 = trim top/bottom 5%%. Robust outlier handling.")
+spsa_group.add_argument("--loss-scale", type=float, default=1.0,
+    help="Scale loss by this factor before SPSA gradient estimation. With tied lr=eps, "
+         "the SPSA update is (L+-L-)/2 * z, so loss_scale=C gives effective lr = C*eps. "
+         "E.g. loss_scale=10 with eps=0.01 gives effective lr=0.1.")
 spsa_group.add_argument("--richardson", action="store_true",
     help="Richardson extrapolation: evaluate at ±eps AND ±2*eps to cancel O(eps²) bias. "
          "Gives O(eps⁴) bias (e.g. eps=0.1 matches eps=0.01 standard). 2x forward passes.")
@@ -245,10 +258,22 @@ spsa_group.add_argument("--spsa-topk", type=float, default=0.0,
     help="Fraction of perturbations to use for gradient estimation (0=disabled, 0.5=top 50%%). "
          "Selects perturbations with largest |loss_diff|, discarding noisy low-signal ones. "
          "Free variance reduction: no extra forward passes, just better gradient aggregation.")
+spsa_group.add_argument("--mom-groups", type=int, default=0,
+    help="Median-of-means gradient estimation: split perturbations into K groups, compute mean "
+         "coefficient per group, take median of group means. More robust to heavy-tailed noise "
+         "than winsorize. E.g. --mom-groups 10 with 100 perts = 10 groups of 10.")
 spsa_group.add_argument("--curriculum-polish", type=float, default=0.0,
     help="Fraction of training at end to spend polishing at T=t_min (0=disabled). "
          "After curriculum reaches t_max, drops T back to t_min for final refinement. "
          "E.g., 0.05 = last 5%% of training at T=1 for sharpening early denoising steps.")
+spsa_group.add_argument("--polish-loss-type", type=str, default=None,
+    help="Switch to this loss type during polish phase (e.g., direct_fid). "
+         "Allows training with MSE/GL, then fine-tuning with a perceptual/FID loss. "
+         "Only active during curriculum-polish phase (when T drops back to t_min).")
+spsa_group.add_argument("--soft-polish", action="store_true",
+    help="Gradual polish: instead of hard T jump to t_min, linearly decrease T from "
+         "current T back to t_min during polish phase. Avoids sudden T transitions that "
+         "can cause loss spikes. Requires --curriculum-polish > 0.")
 spsa_group.add_argument("--elite-perts", type=int, default=0,
     help="Number of elite perturbation seeds to carry over from previous step (0=disabled). "
          "Tracks the K best perturbation directions (lowest loss) and reuses them next step, "
@@ -286,6 +311,9 @@ spsa_group.add_argument("--pert-sub-batch", type=int, default=0,
          "E.g., 16 means each perturbation evaluates on 16 random images from the fixed batch. "
          "Enables more perturbations for same compute: if batch=48 and sub-batch=16, "
          "you can run 3x more perts (--n-perts 300) in the same time.")
+spsa_group.add_argument("--sub-batch-fixed", action="store_true",
+    help="Use same sub-batch indices for ALL perturbations and steps (forces memorization). "
+         "Only meaningful with --pert-sub-batch > 0.")
 spsa_group.add_argument("--block-cyclic", action="store_true",
     help="Block-cyclic SPSA: each step only perturbs one parameter group (cycling through). "
          "Reduces perturbation dimensionality for better gradient estimates per group. "
@@ -348,6 +376,19 @@ spsa_group.add_argument("--loss-mix", type=str, default="",
     help="Mix of loss functions with weights, e.g., 'denoising:0.7,denoising_fft:0.3'. "
          "Evaluates multiple losses per perturbation and combines them. "
          "Provides richer gradient signal than any single loss.")
+spsa_group.add_argument("--ssim-weight", type=float, default=0.0,
+    help="Add SSIM loss at denoising endpoint with this weight. "
+         "SSIM captures structural similarity (luminance, contrast, structure) that MSE misses. "
+         "E.g., 0.3 means final_loss = MSE + 0.3*(1-SSIM). Zero-order friendly since non-differentiable.")
+spsa_group.add_argument("--kalman-grad", action="store_true",
+    help="Use Kalman-filtered gradient estimation. Maintains a state estimate and uncertainty "
+         "for the gradient, updating with each new noisy observation. Reduces noise in gradient "
+         "estimates over time while adapting to changing gradients. program.md suggests this.")
+spsa_group.add_argument("--vel-match", type=float, default=0.0,
+    help="Velocity matching auxiliary loss weight. At each GL node, compute MSE between "
+         "predicted velocity and analytical target velocity v_target=(x_b-x)/(1-t). "
+         "Provides per-step gradient signal (not just endpoint). 0=disabled. "
+         "E.g., 0.5 means loss = endpoint_MSE + 0.5 * avg_velocity_MSE.")
 spsa_group.add_argument("--eps-decay", type=float, default=0.0,
     help="Epsilon decay: anneal epsilon from initial value down to eps*eps_decay by end of training. "
          "0 = no decay (fixed eps). 0.1 = decay to 10%% of initial eps. "
@@ -356,6 +397,17 @@ spsa_group.add_argument("--t-lr-scale", action="store_true",
     help="Scale learning rate inversely with T: lr_eff = lr / sqrt(T). "
          "At T=1 gradients are cleaner so bigger steps are safe. "
          "At T=4 gradients are noisier so smaller steps prevent divergence. Zero extra cost.")
+spsa_group.add_argument("--lora-rank", type=int, default=0,
+    help="LoRA rank for SPSA (0=disabled). Reparametrize Linear layers as W_frozen + A@B "
+         "where only low-rank A,B are perturbed by SPSA. Dramatically reduces perturbable "
+         "param count for better gradient quality. E.g., 8 = rank-8 LoRA.")
+spsa_group.add_argument("--lora-targets", type=str, default="attn,mlp",
+    help="Comma-separated LoRA targets: attn (c_q,c_k,c_v,c_proj), mlp (c_fc,c_fc_proj), "
+         "ada (adaLN_modulation), time (time_embed), final (final_adaLN,final_proj). "
+         "Default: attn,mlp (attention + feedforward layers in transformer blocks).")
+spsa_group.add_argument("--lora-alpha", type=float, default=1.0,
+    help="LoRA scaling factor: output = W_frozen @ x + (alpha/rank) * A @ B @ x. "
+         "Higher alpha = LoRA has more influence. Default 1.0 = standard scaling.")
 
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
@@ -667,6 +719,134 @@ class DiT(nn.Module):
         return x
 
 # ---------------------------------------------------------------------------
+# LoRA for SPSA: Low-Rank Adaptation to reduce perturbable parameter count
+# ---------------------------------------------------------------------------
+
+class LoRALinear(nn.Module):
+    """Drop-in replacement for nn.Linear with frozen base + trainable low-rank A,B.
+
+    Forward: y = W_frozen @ x + (alpha/rank) * (A @ B) @ x
+    Only A and B have requires_grad=True, so SPSA perturbs only these.
+    For n_embd=128, rank=8: each layer adds 128*8 + 8*128 = 2048 params
+    instead of perturbing 128*128 = 16384 params (8x reduction).
+    """
+    def __init__(self, base_linear: nn.Linear, rank: int, alpha: float = 1.0):
+        super().__init__()
+        self.in_features = base_linear.in_features
+        self.out_features = base_linear.out_features
+        self.rank = rank
+        self.scale = alpha / rank
+
+        # Freeze base weight
+        self.weight = nn.Parameter(base_linear.weight.data.clone(), requires_grad=False)
+        if base_linear.bias is not None:
+            self.bias = nn.Parameter(base_linear.bias.data.clone(), requires_grad=False)
+        else:
+            self.bias = None
+
+        # LoRA matrices: A (out, rank) and B (rank, in)
+        # For SPSA: both A and B must be non-zero so perturbations produce
+        # measurable output changes. Standard LoRA uses A=0 but that kills
+        # SPSA gradient signal (zero × anything = zero).
+        # Init: small random for both, scaled so A@B has ~zero mean but non-zero entries.
+        self.lora_A = nn.Parameter(torch.empty(self.out_features, rank))
+        self.lora_B = nn.Parameter(torch.empty(rank, self.in_features))
+        # Scale so ||A@B|| ≈ 0.01 * ||W|| at init (small but detectable by SPSA)
+        std_a = 0.01
+        std_b = 1.0 / math.sqrt(self.in_features)
+        nn.init.normal_(self.lora_A, std=std_a)
+        nn.init.normal_(self.lora_B, std=std_b)
+
+    def forward(self, x):
+        # Base forward (frozen)
+        y = F.linear(x, self.weight, self.bias)
+        # LoRA delta
+        y = y + (x @ self.lora_B.t() @ self.lora_A.t()) * self.scale
+        return y
+
+
+def apply_lora(model: DiT, rank: int, alpha: float, targets: str, device=None):
+    """Replace target Linear layers in DiT with LoRALinear wrappers.
+
+    Args:
+        model: DiT model
+        rank: LoRA rank
+        alpha: LoRA scaling factor
+        targets: comma-separated target names (attn, mlp, ada, time, final)
+        device: device to place LoRA params on (inferred from model if None)
+
+    Returns:
+        Number of trainable (LoRA) params and total frozen params.
+    """
+    if device is None:
+        device = next(model.parameters()).device
+    target_set = set(t.strip() for t in targets.split(","))
+
+    # Map target names to layer attribute names within DiTBlock
+    block_targets = []
+    if "attn" in target_set:
+        block_targets.extend(["c_q", "c_k", "c_v", "c_proj"])
+    if "mlp" in target_set:
+        block_targets.extend(["c_fc", "c_fc_proj"])
+
+    replaced = 0
+
+    # Replace layers in transformer blocks
+    for block in model.blocks:
+        for attr_name in block_targets:
+            if hasattr(block, attr_name):
+                old_layer = getattr(block, attr_name)
+                if isinstance(old_layer, nn.Linear):
+                    setattr(block, attr_name, LoRALinear(old_layer, rank, alpha).to(device))
+                    replaced += 1
+
+        # AdaLN modulation (it's inside a Sequential)
+        if "ada" in target_set:
+            seq = block.adaLN_modulation
+            for i, layer in enumerate(seq):
+                if isinstance(layer, nn.Linear):
+                    seq[i] = LoRALinear(layer, rank, alpha).to(device)
+                    replaced += 1
+
+    # Time embed (inside Sequential)
+    if "time" in target_set:
+        seq = model.time_embed.mlp
+        for i, layer in enumerate(seq):
+            if isinstance(layer, nn.Linear):
+                seq[i] = LoRALinear(layer, rank, alpha).to(device)
+                replaced += 1
+
+    # Final layers
+    if "final" in target_set:
+        # final_adaLN is Sequential
+        seq = model.final_adaLN
+        for i, layer in enumerate(seq):
+            if isinstance(layer, nn.Linear):
+                seq[i] = LoRALinear(layer, rank, alpha).to(device)
+                replaced += 1
+        if isinstance(model.final_proj, nn.Linear):
+            model.final_proj = LoRALinear(model.final_proj, rank, alpha).to(device)
+            replaced += 1
+
+    # Freeze ALL non-LoRA parameters
+    lora_params = 0
+    frozen_params = 0
+    for name, param in model.named_parameters():
+        if "lora_A" in name or "lora_B" in name:
+            param.requires_grad = True
+            lora_params += param.numel()
+        else:
+            param.requires_grad = False
+            frozen_params += param.numel()
+
+    print(f"  LoRA applied: {replaced} layers wrapped (rank={rank}, alpha={alpha})")
+    print(f"  LoRA trainable params: {lora_params:,} ({100*lora_params/(lora_params+frozen_params):.1f}%)")
+    print(f"  Frozen params: {frozen_params:,}")
+
+    return lora_params, frozen_params
+
+
+# ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
 # ---------------------------------------------------------------------------
 
@@ -748,6 +928,7 @@ class SPSATrainer:
         self.topk = topk  # fraction of perturbations to keep (0 = all)
         self.winsorize_pct = winsorize_pct
         self.richardson = richardson
+        self.mom_groups = 0  # median-of-means groups (set from args)
         self.elite_perts = 0  # set from args after construction
         self._elite_seeds = []  # seeds of best perturbations from last step
         self.sign_consensus = 0  # set from args after construction
@@ -826,6 +1007,12 @@ class SPSATrainer:
         self.group_adaptive_lr = False  # set from args after construction
         self._prev_grads = None  # previous step's gradients (for cosine similarity)
         self._group_lr_scale = None  # per-group LR multiplier
+        # Kalman gradient filter state
+        self.kalman_grad = False  # set from args after construction
+        self._kalman_state = None  # estimated true gradient per group
+        self._kalman_P = None  # state uncertainty per group (scalar)
+        self._kalman_R = None  # observation noise estimate per group
+        self._kalman_Q = 0.05  # process noise (gradient changes between steps)
 
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
@@ -1016,8 +1203,8 @@ class SPSATrainer:
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus:
-                # Deferred accumulation: store coefficients for median clipping, top-K, winsorization, or split consensus
+            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0:
+                # Deferred accumulation: store coefficients for median clipping, top-K, winsorization, MoM, or split consensus
                 if not hasattr(self, '_deferred_coeffs'):
                     self._deferred_coeffs = []
                 self._deferred_coeffs.append(grad_coeff)
@@ -1051,7 +1238,7 @@ class SPSATrainer:
             self._elite_seeds = [seed for _, seed in _pert_losses[:self.elite_perts]]
 
         # Deferred gradient accumulation: replay perturbations with processed coefficients
-        _use_deferred = (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus)
+        _use_deferred = (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0)
         if _use_deferred and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
             coeffs = self._deferred_coeffs
 
@@ -1081,6 +1268,24 @@ class SPSATrainer:
                 lo_clip = sorted_coeffs[k]
                 hi_clip = sorted_coeffs[n - 1 - k]
                 coeffs = [max(lo_clip, min(hi_clip, c)) for c in coeffs]
+
+            # Median-of-means: split perts into K groups, mean per group, median across groups
+            # Each pert keeps its original coefficient but scaled by median-of-means / plain-mean
+            if self.mom_groups > 0 and len(coeffs) >= self.mom_groups:
+                K = self.mom_groups
+                group_size = len(coeffs) // K
+                group_means = []
+                for g in range(K):
+                    start = g * group_size
+                    end = start + group_size if g < K - 1 else len(coeffs)
+                    group_means.append(sum(coeffs[start:end]) / (end - start))
+                group_means.sort()
+                mom_estimate = group_means[K // 2]  # median of group means
+                plain_mean = sum(coeffs) / len(coeffs) if coeffs else 1.0
+                # Scale all coefficients so their mean matches the robust MoM estimate
+                if abs(plain_mean) > 1e-12:
+                    scale = mom_estimate / plain_mean
+                    coeffs = [c * scale for c in coeffs]
 
             if self.split_consensus:
                 # Split-consensus: accumulate first half and second half into separate buffers
@@ -1212,6 +1417,29 @@ class SPSATrainer:
                         self._group_lr_scale[i] = max(self._group_lr_scale[i] * 0.95, 0.2)
                     # Update previous gradient
                     self._prev_grads[i] = curr.clone()
+
+        # Kalman gradient filter: maintain state estimate with adaptive noise model
+        if self.kalman_grad and self.grads is not None:
+            if self._kalman_state is None:
+                # Initialize state with first observation
+                self._kalman_state = [g.clone() for g in self.grads]
+                self._kalman_P = [1.0] * len(self.grads)
+                self._kalman_R = [1.0] * len(self.grads)
+            else:
+                for i, g_obs in enumerate(self.grads):
+                    # Innovation (observation - state)
+                    innov = g_obs - self._kalman_state[i]
+                    innov_var = (innov.float() * innov.float()).mean().item()
+                    # Update observation noise estimate (EMA of innovation variance)
+                    self._kalman_R[i] = 0.9 * self._kalman_R[i] + 0.1 * innov_var
+                    # Kalman predict: state unchanged, uncertainty grows
+                    P_pred = self._kalman_P[i] + self._kalman_Q
+                    # Kalman update
+                    K = P_pred / (P_pred + self._kalman_R[i] + 1e-8)
+                    self._kalman_state[i] = self._kalman_state[i] + K * innov
+                    self._kalman_P[i] = (1 - K) * P_pred
+                    # Replace gradient with filtered version
+                    self.grads[i] = self._kalman_state[i].clone()
 
         # Apply update
         if self.use_adam and self.m is not None:
@@ -1732,6 +1960,11 @@ else:
     model.eval()
     for p in model.parameters():
         p.requires_grad = True
+    # Apply LoRA if requested (replaces Linear layers with LoRALinear, freezes base weights)
+    if args.lora_rank > 0:
+        lora_trainable, lora_frozen = apply_lora(
+            model, rank=args.lora_rank, alpha=args.lora_alpha, targets=args.lora_targets)
+        print(f"  SPSA will perturb {lora_trainable:,} LoRA params (was {lora_frozen + lora_trainable:,})")
     # Freeze specified modules (reduce SPSA dimensionality)
     if args.freeze_pattern:
         freeze_patterns = [pat.strip() for pat in args.freeze_pattern.split(",")]
@@ -1826,9 +2059,15 @@ else:
     if args.split_consensus:
         trainer.split_consensus = True
         print(f"  Split consensus: split {args.n_perts} perts into 2 groups, mask where signs disagree")
+    if args.mom_groups > 0:
+        trainer.mom_groups = args.mom_groups
+        print(f"  Median-of-means: {args.mom_groups} groups of ~{args.n_perts // args.mom_groups} perts")
     if args.group_adaptive_lr:
         trainer.group_adaptive_lr = True
         print(f"  Group-adaptive LR: per-group LR scale based on gradient consistency")
+    if args.kalman_grad:
+        trainer.kalman_grad = True
+        print(f"  Kalman gradient filter: adaptive noise-aware gradient smoothing")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -1891,7 +2130,8 @@ if args.solver == "spsa":
     spsa_inception = [None]
     spsa_ref_mu = [None]
     spsa_ref_sigma = [None]
-    if args.spsa_loss_type in ("inception", "minifid", "mmd_inception", "direct_fid"):
+    _fid_loss_types = ("inception", "minifid", "mmd_inception", "direct_fid")
+    if args.spsa_loss_type in _fid_loss_types or getattr(args, 'polish_loss_type', None) in _fid_loss_types:
         import os as _os
         STATS_DIR = _os.path.join(_os.path.expanduser("~"), ".cache", "autoresearch", "stats")
         spsa_inception[0] = InceptionFeatureExtractor(device=str(device))
@@ -1908,7 +2148,9 @@ if args.solver == "spsa":
     # Sub-batch perturbation: track current perturbation index for deterministic subset selection
     _current_pert_idx = [0]
 
-    def spsa_loss_fn(batch_idx=0):
+    _loss_scale = getattr(args, 'loss_scale', 1.0)
+
+    def _spsa_loss_fn_inner(batch_idx=0):
         """SPSA training loss with multiple loss type options."""
         T = current_T[0]  # Dynamic T, set per training step
         x_b, y_b = spsa_batches[batch_idx % len(spsa_batches)]
@@ -1919,7 +2161,11 @@ if args.solver == "spsa":
             sub_n = args.pert_sub_batch
             # Deterministic selection based on pert index (consistent across +ε and -ε)
             _sub_rng = torch.Generator()
-            _sub_rng.manual_seed(_current_pert_idx[0] * 7919 + step * 31 + batch_idx)
+            if getattr(args, 'sub_batch_fixed', False):
+                # Fixed mode: same subset for all perturbations and steps (forces memorization)
+                _sub_rng.manual_seed(42)
+            else:
+                _sub_rng.manual_seed(_current_pert_idx[0] * 7919 + step * 31 + batch_idx)
             indices = torch.randperm(n_img, generator=_sub_rng)[:sub_n]
             x_b = x_b[indices]
             y_b = y_b[indices]
@@ -1933,6 +2179,15 @@ if args.solver == "spsa":
             if progress_now < args.loss_warmup_frac:
                 loss_type = "denoising"  # warm start with MSE
             active_loss_type[0] = loss_type
+        # Polish loss: switch to a different loss during the polish phase
+        # This enables training with GL/MSE, then fine-tuning with FID/perceptual
+        if args.polish_loss_type and args.curriculum_polish > 0:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            if progress_now >= (1.0 - args.curriculum_polish):
+                if active_loss_type[0] != args.polish_loss_type:
+                    print(f"  [Polish loss switch at {progress_now:.1%}] {active_loss_type[0]} -> {args.polish_loss_type}")
+                loss_type = args.polish_loss_type
+                active_loss_type[0] = loss_type
 
         with torch.no_grad(), autocast_ctx:
             if loss_type == "teacher":
@@ -2055,7 +2310,7 @@ if args.solver == "spsa":
                     k3 = model(x + k2 * (dt/2), t_mid, class_labels=y_b)
                     k4 = model(x + k3 * dt, t_end, class_labels=y_b)
                     x = x + (k1 + 2*k2 + 2*k3 + k4) * (dt / 6)
-                return F.mse_loss(x, x_b).item()
+                return F.mse_loss(x.float(), x_b.float()).item()
             elif loss_type == "denoising_logmse":
                 # Log-MSE loss: log(MSE) gives larger gradient signal when loss is small
                 # Changes the SPSA gradient landscape - gradient magnitude doesn't decay with loss
@@ -2164,7 +2419,38 @@ if args.solver == "spsa":
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
                     x = x + velocity * dt_i
-                return F.mse_loss(x, x_b).item()
+                return F.mse_loss(x.float(), x_b.float()).item()
+            elif loss_type == "denoising_cosine_progressive":
+                # Like denoising_cosine_steps but adds weighted intermediate MSE losses.
+                # Each step's MSE is weighted by (step/T)^2, giving exponentially more
+                # weight to later steps. The endpoint loss still dominates but intermediate
+                # losses give SPSA additional gradient signal for free.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                if args.noise_scale_start < 1.0:
+                    _ns_progress = min(total_training_time / args.time_budget, 1.0)
+                    _ns_cf = getattr(args, 'curriculum_frac', 0.67)
+                    _ns_scale = args.noise_scale_start + (1.0 - args.noise_scale_start) * min(_ns_progress / _ns_cf, 1.0)
+                    noise = noise * _ns_scale
+                x = noise.clone()
+                t_points = [0.5 * (1.0 - _math.cos(_math.pi * i / T)) for i in range(T + 1)]
+                total_loss = 0.0
+                for i in range(T):
+                    t_val = t_points[i]
+                    dt_i = t_points[i + 1] - t_points[i]
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt_i
+                    # Weight intermediate steps by (step/T)^2 * 0.1
+                    # Final step (i=T-1) gets weight 0.1, endpoint MSE gets weight 1.0
+                    w = 0.1 * ((i + 1) / T) ** 2
+                    total_loss += w * F.mse_loss(x.float(), x_b.float()).item()
+                # Endpoint loss with full weight
+                total_loss += F.mse_loss(x.float(), x_b.float()).item()
+                return total_loss
             elif loss_type == "denoising_gauss_legendre":
                 # Gauss-Legendre quadrature: mathematically optimal node placement
                 # for numerical integration. Maps GL nodes from [-1,1] to [0,1].
@@ -2213,14 +2499,87 @@ if args.solver == "spsa":
                 # Use GL nodes: evaluate velocity at each node, weight by GL weight
                 # For Euler-like integration: dt proportional to GL weight
                 # Sort nodes and create intervals
+                if args.aux_loss or (args.cascade_T and T > 1):
+                    # Combined aux-loss + cascade-T with GL integration
+                    total_extra = 0.0
+                    n_blocks = len(model.blocks) * getattr(model.config, 'repeat_blocks', 1)
+                    cascade_weight_sum = 0.0
+                    for i in range(len(t_nodes)):
+                        t_val = t_nodes[i]
+                        dt_i = t_weights[i]
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        if args.aux_loss:
+                            velocity, intermediates = model(x, t_tensor, class_labels=y_b, return_intermediates=True)
+                        else:
+                            velocity = model(x, t_tensor, class_labels=y_b)
+                        x = x + velocity * dt_i
+                        # Auxiliary loss: per-layer gradient signal
+                        if args.aux_loss:
+                            for j, vel_j in enumerate(intermediates[:-1]):
+                                x_aux = (x - velocity * dt_i) + vel_j * dt_i
+                                aux_w = 0.5 / max(n_blocks - 1, 1)
+                                total_extra += F.mse_loss(x_aux, x_b).item() * aux_w
+                        # Cascade-T: loss at each intermediate step
+                        if args.cascade_T and T > 1:
+                            weight = (i + 1) / len(t_nodes)
+                            total_extra += F.mse_loss(x, x_b).item() * weight
+                            cascade_weight_sum += weight
+                    final_loss = F.mse_loss(x.float(), x_b.float()).item()
+                    if args.cascade_T and T > 1 and not args.aux_loss:
+                        # Cascade-only: normalize by weight sum
+                        return total_extra / cascade_weight_sum
+                    return final_loss + total_extra
+                if False:  # placeholder for legacy cascade-T path
+                    # Cascade-T with GL integration: loss at each intermediate step
+                    total_cascade = 0.0
+                    for i in range(len(t_nodes)):
+                        t_val = t_nodes[i]
+                        dt_i = t_weights[i]
+                        t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                        velocity = model(x, t_tensor, class_labels=y_b)
+                        x = x + velocity * dt_i
+                        weight = (i + 1) / len(t_nodes)
+                        total_cascade += F.mse_loss(x, x_b).item() * weight
+                    weight_sum = sum((i + 1) / len(t_nodes) for i in range(len(t_nodes)))
+                    return total_cascade / weight_sum
+                vel_match_w = getattr(args, 'vel_match', 0.0)
+                vel_match_loss = 0.0
                 for i in range(len(t_nodes)):
                     t_val = t_nodes[i]
                     # dt_i = GL weight scaled to total interval [0,1]
                     dt_i = t_weights[i]
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x, t_tensor, class_labels=y_b)
+                    if vel_match_w > 0:
+                        # Velocity direction matching: cosine similarity between
+                        # predicted velocity and analytical target v=(x_b-x)/(1-t)
+                        # Cosine sim focuses on direction not magnitude — more stable
+                        denom = max(1.0 - t_val, 0.05)
+                        v_target = (x_b - x) / denom
+                        vf = velocity.float().reshape(velocity.shape[0], -1)
+                        vtf = v_target.float().reshape(v_target.shape[0], -1)
+                        cos_sim = F.cosine_similarity(vf, vtf, dim=1).mean()
+                        vel_match_loss += (1.0 - cos_sim).item()
                     x = x + velocity * dt_i
-                return F.mse_loss(x, x_b).item()
+                mse = F.mse_loss(x.float(), x_b.float()).item()
+                if vel_match_w > 0:
+                    vel_match_loss /= len(t_nodes)
+                    mse = mse + vel_match_w * vel_match_loss
+                if getattr(args, 'ssim_weight', 0.0) > 0:
+                    # Add SSIM loss at endpoint for perceptual quality
+                    xf = x.float()
+                    xbf = x_b.float()
+                    C1, C2 = 0.01**2, 0.03**2
+                    mu_x = F.avg_pool2d(xf, 8, 8)
+                    mu_y = F.avg_pool2d(xbf, 8, 8)
+                    sigma_x2 = F.avg_pool2d(xf * xf, 8, 8) - mu_x * mu_x
+                    sigma_y2 = F.avg_pool2d(xbf * xbf, 8, 8) - mu_y * mu_y
+                    sigma_xy = F.avg_pool2d(xf * xbf, 8, 8) - mu_x * mu_y
+                    ssim_map = ((2*mu_x*mu_y + C1) * (2*sigma_xy + C2)) / \
+                               ((mu_x**2 + mu_y**2 + C1) * (sigma_x2 + sigma_y2 + C2))
+                    ssim_loss = (1.0 - ssim_map.mean()).item()
+                    return mse + args.ssim_weight * ssim_loss
+                return mse
             elif loss_type == "denoising_warm_restart":
                 # Warm restart denoising: run ODE, compute MSE, then use the
                 # current prediction as a better starting point and run again.
@@ -2871,7 +3230,7 @@ if args.solver == "spsa":
                     # Ideal position at t_next: linear interpolation
                     x_ideal = (1.0 - t_next) * noise + t_next * x_b
                     # Equal weight per step
-                    total_loss += F.mse_loss(x, x_ideal).item()
+                    total_loss += F.mse_loss(x.float(), x_ideal.float()).item()
                 return total_loss / T
             elif loss_type == "denoising_flow_match_mae":
                 # Same as flow_match but with L1 loss
@@ -3397,6 +3756,14 @@ if args.solver == "spsa":
                 fid_approx = mean_term + trace_gen + trace_ref - 2 * cross_term
                 return fid_approx
 
+    # Wrap loss function with loss scaling (effective LR multiplier for tied lr=eps)
+    if _loss_scale != 1.0:
+        def spsa_loss_fn(batch_idx=0):
+            return _spsa_loss_fn_inner(batch_idx) * _loss_scale
+        print(f"  Loss scale: {_loss_scale}x (effective lr ≈ {_loss_scale * args.epsilon:.4f})")
+    else:
+        spsa_loss_fn = _spsa_loss_fn_inner
+
     # Probe setup for LR search
     probe_data = [None, None]
 
@@ -3442,20 +3809,33 @@ if args.solver == "spsa":
 # Pre-load fixed buffer if using fixed-batch mode
 fixed_buffer = None
 fixed_all_batch = None  # Pre-concatenated batch for "all" mode
+fixed_pool_buffer = None  # Larger pool for restless sampling
 if args.fixed_batch_size > 0 and args.solver == "spsa":
+    pool_size = max(args.fixed_batch_pool, args.fixed_batch_size)
     fixed_buffer = []
-    print(f"Pre-loading {args.fixed_batch_size} fixed images for SPSA training...")
-    for i in range(args.fixed_batch_size):
+    print(f"Pre-loading {pool_size} fixed images for SPSA training...")
+    for i in range(pool_size):
         x_b, y_b, _ = next(train_loader)
         fixed_buffer.append((x_b[:1], y_b[:1]))
-    if args.fixed_batch_mode == "all":
-        # Concatenate all images into a single batch for simultaneous training
+    if args.fixed_batch_pool > args.fixed_batch_size and args.fixed_batch_mode == "all":
+        # Restless pool mode: store full pool, sample subset each step
+        fixed_pool_buffer = fixed_buffer
+        # Initialize fixed_all_batch with first subset (will be resampled each step)
+        fixed_all_batch = (
+            torch.cat([fb[0] for fb in fixed_buffer[:args.fixed_batch_size]], dim=0),
+            torch.cat([fb[1] for fb in fixed_buffer[:args.fixed_batch_size]], dim=0),
+        )
+        print(f"  Loaded pool of {len(fixed_pool_buffer)} images, sampling {args.fixed_batch_size} each step (restless mode)")
+    elif args.fixed_batch_mode == "all":
+        # Standard all-at-once mode (use only fixed_batch_size images)
+        fixed_buffer = fixed_buffer[:args.fixed_batch_size]
         fixed_all_batch = (
             torch.cat([fb[0] for fb in fixed_buffer], dim=0),
             torch.cat([fb[1] for fb in fixed_buffer], dim=0),
         )
         print(f"  Loaded {len(fixed_buffer)} images (all-at-once mode, batch_size={fixed_all_batch[0].shape[0]})")
     else:
+        fixed_buffer = fixed_buffer[:args.fixed_batch_size]
         print(f"  Loaded {len(fixed_buffer)} images (cycling 1-at-a-time)")
 
 t_start_training = time.time()
@@ -3508,6 +3888,15 @@ while True:
         spsa_batches.clear()
         if args.fixed_batch_size > 0 and fixed_buffer is not None:
             if args.fixed_batch_mode == "all" and fixed_all_batch is not None:
+                # Restless pool: resample subset each step (deterministic per step for ±epsilon consistency)
+                if fixed_pool_buffer is not None:
+                    import random as _rand_pool
+                    _pool_rng = _rand_pool.Random(step * 7919 + 31)
+                    _pool_indices = _pool_rng.sample(range(len(fixed_pool_buffer)), args.fixed_batch_size)
+                    fixed_all_batch = (
+                        torch.cat([fixed_pool_buffer[i][0] for i in _pool_indices], dim=0),
+                        torch.cat([fixed_pool_buffer[i][1] for i in _pool_indices], dim=0),
+                    )
                 # Use all fixed images every step
                 x_b, y_b = fixed_all_batch
                 if args.augment_fixed:
@@ -3584,8 +3973,14 @@ while True:
                     ramp_progress = min(ramp_progress, 1.0)
                     current_T[0] = max(1, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
             elif pf > 0 and progress >= (1.0 - pf):
-                # Polish phase: back to t_min for final refinement
-                current_T[0] = args.t_min
+                # Polish phase: refine at low T
+                if getattr(args, 'soft_polish', False):
+                    # Soft polish: linearly decrease T from t_max back to t_min
+                    polish_progress = (progress - (1.0 - pf)) / pf
+                    polish_progress = min(polish_progress, 1.0)
+                    current_T[0] = max(args.t_min, int(args.t_max - (args.t_max - args.t_min) * polish_progress))
+                else:
+                    current_T[0] = args.t_min
             elif progress < cf:
                 current_T[0] = args.t_min
             else:
@@ -3654,10 +4049,14 @@ while True:
             # current_max_T ramps linearly. Gives gradient diversity with curriculum structure.
             progress = min(total_training_time / args.time_budget, 1.0)
             cf = args.curriculum_frac
-            if progress < cf:
+            pf = args.curriculum_polish
+            if pf > 0 and progress >= (1.0 - pf):
+                current_T[0] = args.t_min
+            elif progress < cf:
                 current_T[0] = args.t_min
             else:
-                ramp_progress = (progress - cf) / (1.0 - cf)
+                ramp_end = 1.0 - pf if pf > 0 else 1.0
+                ramp_progress = min((progress - cf) / (ramp_end - cf), 1.0)
                 max_T = max(args.t_min, int(args.t_min + (args.t_max - args.t_min) * ramp_progress))
                 _t_rng = random.Random(step * 31337 + 7)
                 current_T[0] = _t_rng.randint(args.t_min, max(args.t_min, max_T))
@@ -3833,6 +4232,8 @@ while True:
                 )
                 if args.sparse_pert > 0:
                     trainer.sparse_pert = args.sparse_pert
+                if args.mom_groups > 0:
+                    trainer.mom_groups = args.mom_groups
 
         # Forward-FD warmup: use forward-difference for early training, central for rest
         if args.ffd_warmup > 0:
@@ -3844,6 +4245,12 @@ while True:
             progress_now = min(total_training_time / args.time_budget, 1.0)
             min_perts = max(1, int(args.n_perts * args.adaptive_perts_min_frac))
             trainer.n_perts = max(min_perts, int(args.n_perts * (1 - (1 - args.adaptive_perts_min_frac) * progress_now)))
+
+        # N-perts warmup: start with fewer perts for faster early steps, ramp to full
+        if args.n_perts_warmup > 0:
+            progress_now = min(total_training_time / args.time_budget, 1.0)
+            trainer.n_perts = int(args.n_perts_warmup + (args.n_perts - args.n_perts_warmup) * min(progress_now / 0.5, 1.0))
+            trainer.n_perts = max(args.n_perts_warmup, min(trainer.n_perts, args.n_perts))
 
         # SPSA step — with optional per-perturbation hooks (T variation, noise variation, sub-batch)
         _pert_hook = None
@@ -3934,8 +4341,16 @@ while True:
                 if train_loss_f > 1.5 * args._ckpt_loss_ema and step > 100:
                     args._rollback_count += 1
                     if args._rollback_count >= 3:  # 3 consecutive bad steps
+                        if not hasattr(args, '_total_rollbacks'):
+                            args._total_rollbacks = 0
+                        args._total_rollbacks += 1
                         print(f"\n  ROLLBACK at step {step}: loss {train_loss_f:.4f} > 1.5x EMA {args._ckpt_loss_ema:.4f}")
                         print(f"  Restoring checkpoint from step {args._ckpt_step}, halving LR {trainer.lr:.2e} → {trainer.lr/2:.2e}")
+                        # Abort if too many rollbacks (seed is stuck in instability)
+                        if args._total_rollbacks >= 20:
+                            print(f"  Too many rollbacks ({args._total_rollbacks}), aborting — bad seed")
+                            print("FAIL")
+                            exit(1)
                         for n, p in model.named_parameters():
                             if n in args._ckpt_state:
                                 p.data.copy_(args._ckpt_state[n])
