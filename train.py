@@ -175,6 +175,10 @@ spsa_group.add_argument("--adaptive-perts", action="store_true",
          "gradients when model is random), fewer late (more steps for fine-grained updates).")
 spsa_group.add_argument("--adaptive-perts-min-frac", type=float, default=0.25,
     help="Minimum fraction of n_perts to decay to (default: 0.25 = 1/4)")
+spsa_group.add_argument("--loss-adaptive-perts", action="store_true",
+    help="Loss-adaptive perturbation count: when loss is improving rapidly, use fewer perts "
+         "(faster iteration). When loss plateaus, increase perts (better gradient estimation). "
+         "Dynamically allocates compute where it's needed most. Range: n_perts/4 to n_perts*2.")
 spsa_group.add_argument("--sign-update", action="store_true",
     help="Use sign of gradient (signSGD) instead of raw gradient. More robust to outlier "
          "perturbations. Each parameter gets a unit-magnitude update in the estimated direction.")
@@ -4245,6 +4249,31 @@ while True:
             progress_now = min(total_training_time / args.time_budget, 1.0)
             min_perts = max(1, int(args.n_perts * args.adaptive_perts_min_frac))
             trainer.n_perts = max(min_perts, int(args.n_perts * (1 - (1 - args.adaptive_perts_min_frac) * progress_now)))
+
+        # Loss-adaptive perturbation count: use loss slope to dynamically adjust n_perts
+        if args.loss_adaptive_perts and step > 100:
+            # Compare recent loss EMA to slightly older EMA to detect plateau
+            _lap_window = 50
+            _lap_key = '_loss_ema_fast'
+            _lap_key2 = '_loss_ema_slow'
+            if not hasattr(args, _lap_key):
+                setattr(args, _lap_key, smooth_train_loss)
+                setattr(args, _lap_key2, smooth_train_loss)
+            else:
+                _fast = getattr(args, _lap_key)
+                _slow = getattr(args, _lap_key2)
+                _fast = 0.95 * _fast + 0.05 * train_loss_f
+                _slow = 0.99 * _slow + 0.01 * train_loss_f
+                setattr(args, _lap_key, _fast)
+                setattr(args, _lap_key2, _slow)
+                # Relative improvement: positive = still improving, near 0 = plateau
+                _rel_improve = (_slow - _fast) / max(abs(_slow), 1e-8)
+                # Map: large improvement → fewer perts (min n_perts/4), plateau → more perts (n_perts*2)
+                if _rel_improve > 0.001:  # still improving
+                    _scale = max(0.25, 1.0 - _rel_improve * 100)
+                else:  # plateau or worse
+                    _scale = min(2.0, 1.0 + abs(_rel_improve) * 200)
+                trainer.n_perts = max(25, min(args.n_perts * 2, int(args.n_perts * _scale)))
 
         # N-perts warmup: start with fewer perts for faster early steps, ramp to full
         if args.n_perts_warmup > 0:
