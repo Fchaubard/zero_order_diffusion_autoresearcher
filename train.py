@@ -399,9 +399,10 @@ class RecursiveDiT(nn.Module):
         if class_labels is not None:
             c = c + self.label_embed(class_labels)
 
-        # Initialize latent states (TRM-style: single vector broadcast to all patches)
+        # Initialize z_H from input embedding (warm start — the noisy input IS the
+        # first guess), z_L from fixed buffer. This gives recursion a better starting point.
         B, N = input_emb.shape[:2]
-        z_H = self.z_H_init.expand(B, N, -1)
+        z_H = input_emb
         z_L = self.z_L_init.expand(B, N, -1)
 
         # Recursive refinement (TRM-style two-level hierarchy)
@@ -899,8 +900,10 @@ print(f"Solver: {args.solver}")
 print(f"Model config: {asdict(config)}")
 
 # Wandb logging
+run_name = f"{args.solver}_h{args.h_cycles}l{args.l_cycles}d{args.l_layers}_n{args.n_embd}"
 wandb.init(
     project="trm-recursive-diffusion",
+    name=run_name,
     config={**asdict(config), "solver": args.solver, "lr": args.lr,
             "total_batch_size": args.total_batch_size, "time_budget": args.time_budget,
             **({k: getattr(args, k) for k in ["n_perts", "denoising_steps", "epsilon",
