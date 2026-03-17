@@ -27,6 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import triton
 import triton.language as tl
+import wandb
 
 from prepare import IMG_SIZE, IMG_CHANNELS, NUM_CLASSES, TIME_BUDGET, FlowMatching, make_dataloader, evaluate_fid
 
@@ -897,6 +898,15 @@ config = RecursiveDiTConfig(
 print(f"Solver: {args.solver}")
 print(f"Model config: {asdict(config)}")
 
+# Wandb logging
+wandb.init(
+    project="trm-recursive-diffusion",
+    config={**asdict(config), "solver": args.solver, "lr": args.lr,
+            "total_batch_size": args.total_batch_size, "time_budget": args.time_budget,
+            **({k: getattr(args, k) for k in ["n_perts", "denoising_steps", "epsilon",
+               "use_curvature", "search_strategy"] if hasattr(args, k)} if args.solver == "spsa" else {})},
+)
+
 with torch.device("meta"):
     model = RecursiveDiT(config)
 model.to_empty(device=device)
@@ -921,7 +931,7 @@ if args.solver == "tbptt":
         lr=args.lr, weight_decay=args.weight_decay,
         adam_betas=(args.adam_beta1, args.adam_beta2),
     )
-    model = torch.compile(model, dynamic=False)
+    # model = torch.compile(model, dynamic=False)  # disabled: nvcc permission issue
 else:
     # SPSA: no BPTT, no torch.compile (in-place weight perturbation)
     model.eval()
@@ -1160,6 +1170,10 @@ while True:
     solver_tag = "TBPTT" if args.solver == "tbptt" else "SPSA"
     print(f"\rstep {step:05d} ({pct_done:.1f}%) [{solver_tag}] | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | img/sec: {img_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
 
+    wandb.log({"train/loss": debiased_smooth_loss, "train/raw_loss": train_loss_f,
+               "train/lr_multiplier": lrm, "train/img_per_sec": img_per_sec,
+               "train/mfu_pct": mfu, "train/epoch": epoch, "train/progress": progress}, step=step)
+
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:
         gc.collect()
@@ -1178,10 +1192,9 @@ print()  # newline after \r training log
 
 total_images = step * args.total_batch_size
 
-# Final eval
+# Final eval (no autocast — InceptionV3 needs float32 for numpy conversion)
 model.eval()
-with autocast_ctx:
-    val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
+val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
 
 # Final summary
 t_end = time.time()
@@ -1207,3 +1220,8 @@ if args.solver == "spsa":
     print(f"n_perts:          {args.n_perts}")
     print(f"final_lr:         {trainer.lr:.2e}")
     print(f"final_epsilon:    {trainer.epsilon:.2e}")
+
+wandb.log({"eval/val_fid": val_fid, "eval/peak_vram_mb": peak_vram_mb,
+           "eval/mfu_percent": steady_state_mfu, "eval/total_images_M": total_images / 1e6,
+           "eval/num_steps": step, "eval/num_params_M": num_params / 1e6})
+wandb.finish()
