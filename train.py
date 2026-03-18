@@ -1049,11 +1049,17 @@ while True:
     t0 = time.time()
 
     if args.solver == "tbptt":
-        # ----- TBPTT: teacher-forced flow matching with truncated BPTT -----
+        # ----- TBPTT: cosine+MSE flow matching loss with truncated BPTT -----
         for micro_step in range(grad_accum_steps):
             with autocast_ctx:
-                loss = flow_matching.train_loss(model, x, class_labels=y)
-            train_loss = loss.detach()
+                batch_size = x.shape[0]
+                t = torch.rand(batch_size, device=x.device)
+                x_t, velocity = flow_matching.forward_sample(x, t)
+                pred = model(x_t, t, class_labels=y)
+                mse = F.mse_loss(pred, velocity)
+                cos = 1.0 - F.cosine_similarity(pred.flatten(1), velocity.flatten(1), dim=1).mean()
+                loss = mse + 0.5 * cos
+            train_loss = mse.detach()
             loss = loss / grad_accum_steps
             loss.backward()
             x, y, epoch = next(train_loader)
