@@ -1092,10 +1092,11 @@ while True:
             group["lr"] = group["initial_lr"] * lrm
         optimizer.step()
         model.zero_grad(set_to_none=True)
-        # Update EMA
+        # Progressive EMA: decay increases from 0.99 to 0.9999 over training
+        current_decay = 0.99 + progress * 0.0099  # 0.99 -> 0.9999
         with torch.no_grad():
             for p_ema, p_model in zip(ema_model.parameters(), model.parameters()):
-                p_ema.data.mul_(ema_decay).add_(p_model.data, alpha=1 - ema_decay)
+                p_ema.data.mul_(current_decay).add_(p_model.data, alpha=1 - current_decay)
         train_loss_f = train_loss.item()
 
     else:
