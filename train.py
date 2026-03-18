@@ -415,8 +415,14 @@ class RecursiveDiT(nn.Module):
                     z_L = self.l_level(z_L, z_H + input_emb, c)
                 z_H = self.l_level(z_H, z_L, c)
 
-        # Last H_cycle: symmetric recursion (forward L-cycles + reverse refinement)
-        for _l in range(self.config.l_cycles):
+        # Last H_cycle: noise-adaptive depth + symmetric refinement
+        # More recursive cycles for noisier inputs (t near 0 = high noise)
+        if self.training:
+            mean_t = t.mean().item()
+            extra = max(0, int((1.0 - mean_t) * self.config.l_cycles))
+        else:
+            extra = 0
+        for _l in range(self.config.l_cycles + extra):
             z_L = self.l_level(z_L, z_H + input_emb, c)
         z_H = self.l_level(z_H, z_L, c)
         # Reverse pass: z_H refines further via z_L+input_emb
