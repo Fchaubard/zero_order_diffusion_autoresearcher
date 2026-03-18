@@ -87,6 +87,8 @@ train_group.add_argument("--warmup-steps", type=int, default=10,
     help="Steps before counting toward time budget (compilation warmup)")
 train_group.add_argument("--fail-threshold", type=float, default=100.0,
     help="Loss threshold for fast fail (abort if loss exceeds this)")
+train_group.add_argument("--num-workers", type=int, default=4,
+    help="Dataloader workers (reduce to 1 when running 8 experiments in parallel)")
 
 # Backprop-specific
 bp_group = parser.add_argument_group("tbptt-specific")
@@ -954,7 +956,7 @@ else:
         accum_steps=args.spsa_accum_steps, weight_decay=args.spsa_weight_decay,
     )
 
-train_loader = make_dataloader("train", args.device_batch_size)
+train_loader = make_dataloader("train", args.device_batch_size, num_workers=args.num_workers)
 x, y, epoch = next(train_loader)  # prefetch first batch
 
 print(f"Time budget: {args.time_budget}s")
