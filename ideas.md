@@ -22,11 +22,18 @@ Next Ideas to Try: See below.
 
 -----------------------------------------------------
 idea_id: multi_step_velocity_loss
-Description: Instead of computing loss only at the final output, compute the flow matching velocity loss at EACH H_cycle boundary (after z_H is updated by z_L), but ONLY on the z_H output (not z_L intermediates, which failed before in batch 1). Weight later cycles exponentially: w_i = 2^i / sum(2^j). This is "deep supervision for recursive networks" — each level of recursion gets direct gradient signal about its velocity prediction quality. Different from our failed exp1 which incorrectly used z_L intermediates.
+Description: Instead of computing loss only at the final output, compute the flow matching velocity loss at EACH H_cycle boundary (after z_H is updated by z_L), but ONLY on the z_H output (not z_L intermediates, which failed before in batch 1). Weight later cycles exponentially: w_i = 2^i / sum(2^j).
 Confidence: 7
-Why: Our exp1 failed because we computed intermediates from z_L (the working state). z_H is the "answer" state and should be supervised. Each H_cycle produces a z_H that goes through the output head — supervising these gives the shared blocks gradient signal at multiple recursion depths. Literature on deep supervision (Lee et al. 2015) shows this consistently helps in deep/recursive networks. The key difference from our failed attempt is using z_H (output state) not z_L (working state).
+Why: z_H is the "answer" state and should be supervised at each cycle.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Failed
+HPPs: exp weighting 2^i, Huber+cos at each H_cycle output
+Time of run start and end: 2026-03-18 12:00 - 2026-03-18 13:15
+Results vs. Baseline: 316.78 FID vs 314.38 baseline. +2.40 worse.
+wandb link: multi_step_velocity_loss
+Analysis: The extra output head evaluations per H_cycle slow training (~5% fewer steps). The no-grad H_cycles produce detached z_H outputs — supervising those with gradients flowing through the output head but NOT through the recursion gives a confusing signal. The deep supervision approach doesn't map well to truncated BPTT where most cycles are in no-grad mode.
+Conclusion: Deep supervision doesn't help when most H_cycles are gradient-truncated. The final H_cycle already gets good gradient signal.
+Next Ideas to Try: N/A
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -42,7 +49,7 @@ Description: Replace the additive injection `x = x + input_injection` in l_level
 Confidence: 7
 Why: Currently all patches receive identical injection strength. But image complexity varies spatially — a sky patch is simple while a face patch is complex. A learned gate would let the model adaptively control information flow. This is related to highway networks (Srivastava et al. 2015) and LSTM gating. Gate should be zero-initialized so it starts as standard additive (no regression from baseline).
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Implemented, not tried
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -138,7 +145,14 @@ Description: Add a contrastive loss on velocity predictions: velocities for imag
 Confidence: 4
 Why: The model has a class conditioning mechanism via label embeddings, but the velocity loss (Huber) doesn't explicitly encourage class-dependent structure. A contrastive term would push the model to produce systematically different velocities for different classes, improving class-conditional generation quality which directly impacts FID (which measures per-class quality). Risk: may be too expensive (O(B^2) pairwise computation) and the signal may be noisy since velocity also depends heavily on t and noise.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Failed
+HPPs: InfoNCE temperature=0.1, contrastive weight=0.01
+Time of run start and end: 2026-03-18 12:00 - 2026-03-18 12:01
+Results vs. Baseline: NaN divergence at step 4
+wandb link: N/A (crashed immediately)
+Analysis: InfoNCE with temperature 0.1 caused NaN. The velocity vectors in a batch are from different timesteps t, making cosine similarity between same-class samples meaningless — the velocity magnitude and direction depend heavily on t, not just class. The contrastive signal was noise, not signal.
+Conclusion: Contrastive loss on velocity is fundamentally flawed because velocity depends on timestep more than class. Would need to stratify by t-bucket to make this work, but that's too complex.
+Next Ideas to Try: N/A — this direction is a dead end.
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -154,6 +168,54 @@ Description: Instead of predicting the full velocity v, predict a RESIDUAL on to
 Confidence: 4
 Why: Residual learning (He et al. 2016) makes optimization easier by letting the model learn corrections rather than full mappings. The velocity field is complex and varies greatly across timesteps. A residual formulation factors out the "obvious" component, letting the model focus on the hard part. Risk: the naive estimate might not be meaningful, and the residual could have worse conditioning than the original.
 Time of idea generation: 2026-03-18 10:30
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: condition_annealing_sampling
+Description: From Disney Research's CADS paper — during ODE sampling at eval, anneal the class conditioning strength over the ODE steps. Start with strong conditioning (t=0, noisy), then reduce conditioning as we approach clean image (t=1). This improves diversity without hurting quality. Implementation: modify the model's forward to scale the class embedding by a factor that depends on t: `c_class = label_embed(y) * max(0, 1 - t/0.5)` (full conditioning at t<0.5, linear decay to zero at t=1). Only active at eval, training unchanged.
+Confidence: 7
+Why: CADS (Disney Research 2024) showed this simple trick significantly improves FID by boosting diversity. It prevents the model from "collapsing" to a single mode per class at the final denoising steps. It's free at training time (no changes needed) and only modifies the eval-time conditioning schedule. Very simple to implement — just add a t-dependent scaling to the class embedding in forward when not training.
+Time of idea generation: 2026-03-18 14:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: progressive_growing_recursion
+Description: Start training with h_cycles=1, l_cycles=1 (minimal recursion) and progressively increase both over the course of training. First 25%: h=1,l=1. Then 50%: h=1,l=2. Then 75%: h=2,l=2. Final 25%: h=2,l=3 (full). This is curriculum learning on the computation depth — teach the shared block to be a good single-pass processor first, then gradually ask it to refine iteratively. Similar to progressive growing of GANs (Karras 2018) but applied to recursion depth instead of resolution.
+Confidence: 6
+Why: Progressive training has been shown to help in many settings (ProGAN, curriculum learning). The model currently struggles to learn meaningful recursion in 1 hour because it needs to simultaneously learn (1) good features and (2) how to refine iteratively. By starting with shallow recursion, the model first learns good features, then learns to refine them. The shared weights benefit because early training teaches them to be good single-pass processors, and later training teaches them to compose well.
+Time of idea generation: 2026-03-18 14:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: noise_prediction_target
+Description: Instead of predicting velocity v = x0 - (1-sigma_min)*noise, predict the noise epsilon directly. Then convert to velocity for the output: v = x0 - (1-sigma_min)*epsilon. The key insight: noise prediction may be an easier learning target for the model because the noise distribution is fixed (standard Gaussian) while the velocity depends on both x0 and noise. The model architecture and eval are unchanged — we just reparameterize the training target. At eval, the model still outputs velocity (we convert internally).
+Confidence: 5
+Why: Many successful diffusion models (DDPM, ADM) use epsilon prediction rather than velocity. The argument is that predicting what was added (noise) is easier than predicting the direction of the flow (velocity). Since our model is capacity-limited (shared weights), making the prediction task easier could help it learn faster in the 1-hour budget. The risk is that flow matching was designed for velocity prediction, and the reparameterization might lose some of the flow matching benefits (straight ODE paths).
+Time of idea generation: 2026-03-18 14:00
 Status: Not Implemented
 HPPs:
 Time of run start and end:
