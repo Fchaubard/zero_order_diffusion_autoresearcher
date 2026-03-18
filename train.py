@@ -915,6 +915,12 @@ with torch.device("meta"):
 model.to_empty(device=device)
 model.init_weights()
 
+# EMA model for evaluation (Polyak averaging)
+import copy
+ema_model = copy.deepcopy(model)
+ema_model.eval()
+ema_decay = 0.999
+
 param_counts = model.num_scaling_params()
 print("Parameter counts:")
 for key, value in param_counts.items():
@@ -1056,10 +1062,10 @@ while True:
                 t = torch.rand(batch_size, device=x.device)
                 x_t, velocity = flow_matching.forward_sample(x, t)
                 pred = model(x_t, t, class_labels=y)
-                mse = F.mse_loss(pred, velocity)
+                huber = F.smooth_l1_loss(pred, velocity)
                 cos = 1.0 - F.cosine_similarity(pred.flatten(1), velocity.flatten(1), dim=1).mean()
-                loss = mse + 0.5 * cos
-            train_loss = mse.detach()
+                loss = huber + 0.5 * cos
+            train_loss = huber.detach()
             loss = loss / grad_accum_steps
             loss.backward()
             x, y, epoch = next(train_loader)
@@ -1071,6 +1077,10 @@ while True:
             group["lr"] = group["initial_lr"] * lrm
         optimizer.step()
         model.zero_grad(set_to_none=True)
+        # Update EMA
+        with torch.no_grad():
+            for p_ema, p_model in zip(ema_model.parameters(), model.parameters()):
+                p_ema.data.mul_(ema_decay).add_(p_model.data, alpha=1 - ema_decay)
         train_loss_f = train_loss.item()
 
     else:
@@ -1201,9 +1211,9 @@ print()  # newline after \r training log
 
 total_images = step * args.total_batch_size
 
-# Final eval (no autocast — InceptionV3 needs float32 for numpy conversion)
-model.eval()
-val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
+# Final eval using EMA model (Polyak averaging gives smoother weights → better FID)
+ema_model.eval()
+val_fid = evaluate_fid(ema_model, flow_matching, args.device_batch_size)
 
 # Final summary
 t_end = time.time()
