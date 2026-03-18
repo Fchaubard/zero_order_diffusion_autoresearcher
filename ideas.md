@@ -241,3 +241,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: spatial_smooth_only_output
+Description: Apply the spatial smoothing conv ONLY on the final z_H output (after all recursion), not at every l_level call. This should be much faster (1 conv instead of 8+) while still fixing the patch grid artifacts at the output stage. The hypothesis is that intermediate spatial mixing isn't needed — what matters is blending the patches before the output head.
+Confidence: 8
+Why: The full spatial_smoothing_conv improved FID (314.29 vs 314.38) but was 4x slower (4727 vs 18000 steps). If we only smooth at the output, we get ~17000 steps with the smoothing benefit. The question is whether intermediate smoothing helps the recursion or if output-stage smoothing is sufficient. Since the model's attention already provides global mixing, the conv mainly needs to fix the final patch boundaries.
+Time of idea generation: 2026-03-18 22:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: spatial_smooth_every_other
+Description: Apply spatial smoothing conv every OTHER l_level call instead of every call. This halves the conv overhead while still providing periodic local mixing during recursion. The model gets ~9000 steps (2x slower, vs 4x for every-call).
+Confidence: 7
+Why: Balances the speed/quality tradeoff of spatial smoothing. Every-call was 4x slower but helped. Every-other should be 2x slower but might capture most of the benefit. The hypothesis is that alternating between global attention and local conv mixing creates a good multi-scale processing pipeline.
+Time of idea generation: 2026-03-18 22:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
