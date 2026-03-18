@@ -279,6 +279,11 @@ class RecursiveDiT(nn.Module):
         # Shared L-level blocks (reused across all recursive cycles, TRM-style)
         self.l_blocks = nn.ModuleList([RecursiveDiTBlock(config) for _ in range(config.l_layers)])
 
+        # Spatial smoothing: 3x3 depthwise conv for local patch blending (gated, starts as no-op)
+        self.spatial_smooth = nn.Conv2d(config.n_embd, config.n_embd, 3, padding=1, groups=config.n_embd, bias=False)
+        self.spatial_gate = nn.Parameter(torch.tensor(0.0))
+        self._patch_grid = config.img_size // config.patch_size
+
         # Fixed initial latent states (TRM-style: buffers, not parameters)
         self.register_buffer('z_H_init', torch.empty(1, 1, config.n_embd))
         self.register_buffer('z_L_init', torch.empty(1, 1, config.n_embd))
@@ -301,10 +306,16 @@ class RecursiveDiT(nn.Module):
         return x
 
     def l_level(self, x, input_injection, c):
-        """Apply shared L-level blocks with input injection (TRM-style)."""
+        """Apply shared L-level blocks with input injection + spatial smoothing."""
         x = x + input_injection
         for block in self.l_blocks:
             x = block(x, c)
+        # Spatial smoothing: local patch blending via 3x3 depthwise conv
+        B, N, C = x.shape
+        g = self._patch_grid
+        x_2d = x.transpose(1, 2).reshape(B, C, g, g)
+        x_smooth = self.spatial_smooth(x_2d).reshape(B, C, N).transpose(1, 2)
+        x = x + torch.sigmoid(self.spatial_gate) * x_smooth
         return x
 
     @torch.no_grad()
@@ -374,8 +385,9 @@ class RecursiveDiT(nn.Module):
         # Separate param groups: embeddings (no decay) vs block weights (decay)
         embed_params = list(self.patch_embed.parameters()) + [self.pos_embed] + \
                        list(self.time_embed.parameters()) + list(self.label_embed.parameters())
-        block_params = list(self.l_blocks.parameters()) + list(self.final_adaLN.parameters()) + \
-                       list(self.final_proj.parameters())
+        block_params = list(self.l_blocks.parameters()) + [self.spatial_gate] + \
+                       list(self.spatial_smooth.parameters()) + \
+                       list(self.final_adaLN.parameters()) + list(self.final_proj.parameters())
         assert len(embed_params) + len(block_params) == len(list(self.parameters()))
         param_groups = [
             dict(params=embed_params, lr=lr, betas=adam_betas, weight_decay=0.0),

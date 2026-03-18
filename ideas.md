@@ -225,3 +225,19 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: spatial_smoothing_conv
+Description: Add a lightweight 3x3 depthwise convolution between recursive cycles to provide local spatial mixing between adjacent patches. After each l_level call on z_H, reshape z_H from (B, 256, 768) to (B, 768, 16, 16), apply a 3x3 depthwise conv with zero-initialized weights (starts as identity), reshape back. This addresses the visible blockiness in generated images where 4x4 patches are coherent internally but don't blend with neighbors. The depthwise conv adds only 768*9 = 6912 params.
+Confidence: 8
+Why: Visual inspection of generated samples shows clear 4x4 patch grid artifacts. The model's attention across 256 patches provides global mixing but misses LOCAL spatial relationships between adjacent patches. A 3x3 depthwise conv is the simplest possible fix — it provides nearest-neighbor blending without the O(N^2) cost of attention. Zero-init means it starts as a no-op (no regression risk). This is similar to how ConvNeXt adds local spatial mixing to vision transformers.
+Time of idea generation: 2026-03-18 21:30
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
