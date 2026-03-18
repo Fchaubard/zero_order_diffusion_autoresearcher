@@ -415,10 +415,13 @@ class RecursiveDiT(nn.Module):
                     z_L = self.l_level(z_L, z_H + input_emb, c)
                 z_H = self.l_level(z_H, z_L, c)
 
-        # Last H_cycle with gradient tracking
+        # Last H_cycle: symmetric recursion (forward L-cycles + reverse refinement)
         for _l in range(self.config.l_cycles):
             z_L = self.l_level(z_L, z_H + input_emb, c)
         z_H = self.l_level(z_H, z_L, c)
+        # Reverse pass: z_H refines further via z_L+input_emb
+        for _l in range(self.config.l_cycles):
+            z_H = self.l_level(z_H, z_L + input_emb, c)
 
         # Output projection with AdaLN
         shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
