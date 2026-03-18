@@ -1075,7 +1075,11 @@ while True:
                 pred = model(x_t, t, class_labels=y)
                 huber = F.smooth_l1_loss(pred, velocity)
                 cos = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
-                loss = huber + 0.5 * cos
+                # x0 reconstruction: predicted velocity should reconstruct clean image
+                t_exp = t.view(-1, 1, 1, 1)
+                x0_hat = x_t + (1.0 - t_exp) * pred
+                x0_loss = F.smooth_l1_loss(x0_hat, x)
+                loss = huber + 0.5 * cos + 0.1 * x0_loss
             train_loss = huber.detach()
             loss = loss / grad_accum_steps
             loss.backward()
