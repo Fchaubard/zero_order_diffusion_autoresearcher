@@ -337,3 +337,19 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: conv1d_neighbor_mixing
+Description: Replace the 2D spatial smooth (which requires costly reshape from (B,N,C) to (B,C,H,W) and back) with a 1D convolution that mixes neighboring tokens in the flattened sequence. Since patches are in raster-scan order, a 1D conv with kernel_size=3 mixes each patch with its left and right neighbors. To also mix with vertical neighbors (stride=16 apart), add a second 1D conv on the permuted sequence. This avoids the expensive 2D reshape entirely while still providing spatial mixing. Total new params: 768*3*2 = 4608 (tiny).
+Confidence: 8
+Why: The 2D reshape (B,256,768) -> (B,768,16,16) and back accounts for most of the spatial smoothing overhead. A 1D conv on the token sequence avoids this entirely. Raster-scan order means kernel_size=3 naturally mixes horizontal neighbors. For vertical mixing, we can use dilated 1D conv with dilation=16 (the grid width). This gives us both horizontal and vertical local mixing without any reshape. Should be much faster, potentially recovering the 3.5x throughput loss.
+Time of idea generation: 2026-03-19 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
