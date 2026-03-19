@@ -167,7 +167,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_gauss_legendre", "denoising_cosine_progressive",
              "gl_diversity", "gl_spectral", "diversity_mse", "gl_class_diversity",
              "class_ce", "gl_class_ce",
-             "autoreg_mse_ce", "autoreg_ce"],
+             "autoreg_mse_ce", "autoreg_ce",
+             "autoreg_endpoint_ce", "autoreg_corrective_ce"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use --warmup-loss-type before switching to --spsa-loss-type. "
@@ -2238,7 +2239,7 @@ if args.solver == "spsa":
 
     # InceptionV3 classifier for class_ce loss (WITH classification head, not features)
     spsa_classifier = [None]
-    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce")
+    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce")
     if args.spsa_loss_type in _ce_loss_types or getattr(args, 'warmup_loss_type', 'denoising') in _ce_loss_types:
         from torchvision.models import inception_v3, Inception_V3_Weights
         from torchvision import transforms as _tv_transforms
@@ -4154,6 +4155,66 @@ if args.solver == "spsa":
                     logits = clf_model(x_clf)
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 return ce_loss
+            elif loss_type == "autoreg_endpoint_ce":
+                # Endpoint MSE + CE: Run ODE, compare final image to x_data (pixel MSE),
+                # plus InceptionV3 CE. No velocity matching — just "did you make the right image?"
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                # Endpoint pixel MSE
+                endpoint_mse = F.mse_loss(x_gen.float(), x_b.float()).item()
+                # Classify endpoint
+                clf_model, clf_transform = spsa_classifier[0]
+                x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                ce_w = getattr(args, 'diversity_weight', 0.0)
+                if ce_w == 0.0:
+                    ce_w = 1.0
+                return endpoint_mse + ce_w * ce_loss
+            elif loss_type == "autoreg_corrective_ce":
+                # Corrective velocity MSE + CE: Same ODE as autoreg_mse_ce, but
+                # v_target at each step = (x_data - x_gen) / (1 - t) instead of constant
+                # x_data - noise. This always points from current position toward data.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                gl_idx = 0
+                mse = 0.0
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    if gl_idx < len(gl_nodes) and t_val >= gl_nodes[gl_idx] - 0.5 / T:
+                        # Corrective velocity: direction from current position to data
+                        remaining = max(1.0 - t_val, 1e-4)
+                        v_corrective = (x_b - x_gen) / remaining
+                        mse += gl_weights[gl_idx] * F.mse_loss(velocity.float(), v_corrective.float()).item()
+                        gl_idx += 1
+                    x_gen = x_gen + velocity * dt
+                clf_model, clf_transform = spsa_classifier[0]
+                x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                ce_w = getattr(args, 'diversity_weight', 0.0)
+                if ce_w == 0.0:
+                    ce_w = 1.0
+                return mse + ce_w * ce_loss
 
     # Wrap loss function with loss scaling (effective LR multiplier for tied lr=eps)
     if _loss_scale != 1.0:
