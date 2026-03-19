@@ -273,3 +273,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: bigger_smooth_kernel
+Description: Increase the spatial smoothing kernel from 3x3 to 5x5 depthwise conv. This provides wider local mixing (2 patch radius instead of 1). With 16x16 patch grid, a 5x5 kernel covers ~10% of the grid in each pass. Over 8 recursive passes, information can propagate across the full grid. Still depthwise so param count is small: 768*25 = 19.2K params.
+Confidence: 7
+Why: The 3x3 kernel was the key breakthrough. A 5x5 kernel provides wider local mixing per step, potentially reducing the number of recursive passes needed for full spatial coherence. The tradeoff is slightly more compute per conv (25 vs 9 multiply-adds per position), but the conv is already a small fraction of the total compute.
+Time of idea generation: 2026-03-18 23:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: spatial_smooth_plus_cond_anneal
+Description: Combine spatial smoothing (best architectural change) with condition annealing at eval (CADS-style). The spatial smoothing addresses quality (patch coherence) while condition annealing addresses diversity (prevents mode collapse in late ODE steps). Together they may stack for a bigger FID improvement.
+Confidence: 7
+Why: These address orthogonal problems. Spatial smoothing fixes quality (blockiness), condition annealing fixes diversity. FID measures both quality AND diversity, so fixing both should be additive.
+Time of idea generation: 2026-03-18 23:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------

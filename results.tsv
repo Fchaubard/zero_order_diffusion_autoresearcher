@@ -1,0 +1,140 @@
+commit	val_fid	memory_gb	status	description
+c0fba6c	359.6296	2.5	keep	baseline TBPTT h2 l3 l1 n768
+cee5b61	365.0955	2.8	discard	multi-step loss exp-weighted L-cycle intermediates
+d8b5f26	359.6634	2.5	discard	lateral inhibition Sanger-inspired z_H/z_L decorrelation 0.1 weight
+a873caa	351.4180	2.5	keep	warm-start z_H from input_emb instead of fixed buffer
+n/a	351.4344	2.5	discard	exp5 residual skip from input to output
+n/a	352.1428	2.5	discard	exp11 bidirectional z_L->z_H feedback during L-cycles
+n/a	349.6972	1.2	keep	exp6 flat recursion no z_L hierarchy
+n/a	349.9117	2.5	discard	exp7 timestep-scaled input injection
+n/a	0.0000	0.0	crash	exp8 SPSA zero-order (epsilon division by zero)
+n/a	348.7138	2.5	keep	exp9 cosine+MSE combined loss (0.5 weight)
+n/a	351.3463	2.5	discard	exp10 momentum z_H (0.8/0.2 blend)
+n/a	349.2989	2.5	discard	exp4 warm-start both z_H and z_L from input_emb
+n/a	350.5637	2.5	discard	b3 cosine weight 1.0
+n/a	355.1597	1.2	discard	b3 cosine+flat recursion combined
+n/a	316.9451	2.5	keep	b3 EMA model for eval (polyak avg 0.999)
+n/a	349.1132	2.5	discard	b3 frequency domain Laplacian loss
+n/a	347.9875	2.5	keep	b3 high weight decay 0.1
+n/a	316.6331	2.5	keep	b3 Huber+cosine loss (SmoothL1 instead of MSE)
+n/a	346.0127	2.5	keep	b3 timestep-weighted loss (0.5+t)
+n/a	355.3170	2.5	discard	b3 warmstart both + cosine combined
+n/a	317.0138	2.6	keep	b4 Huber+cosine+EMA combined baseline verification
+n/a	342.4069	2.5	discard	b4 cosine weight lowered to 0.25
+n/a	317.0966	2.5	discard	b4 EMA decay 0.9999 (slightly worse than 0.999)
+n/a	348.8064	2.5	discard	b4 gradient clipping max_norm=1.0
+n/a	316.8744	2.5	discard	b4 weight decay 0.1
+n/a	316.8596	2.5	discard	b4 velocity noise augmentation 0.01
+n/a	316.6170	2.5	discard	b4 self-conditioning (prev pred as input)
+n/a	316.7752	2.5	discard	b4 timestep-weighted loss (0.5+t)
+n/a	365.8166	2.5	discard	b5 channel-weighted loss by variance
+n/a	315.1860	2.5	keep	b5 cosine loss computed in fp32
+n/a	316.7379	2.5	discard	b5 larger batch 512
+n/a	316.4441	2.5	discard	b5 multi-scale loss (2x downsampled)
+n/a	316.3056	2.5	discard	b5 progressive T sinusoidal cycle schedule
+n/a	333.4877	2.5	discard	b5 random projection perceptual loss
+n/a	0.0000	0.0	crash	b5 spectral normalization (FID eval timeout)
+n/a	315.4842	2.5	keep	b5 symmetric recursion (reverse L-cycle pass)
+n/a	316.5715	2.5	discard	b6 anti-aliased patch embedding
+n/a	316.7596	2.5	discard	b6 cosine weight 1.0 with Huber
+n/a	316.7564	2.5	discard	b6 cosine annealing LR schedule
+n/a	316.8247	2.5	discard	b6 adaptive cosine weight by timestep
+n/a	316.7819	2.5	discard	b6 logit-normal timestep sampling
+n/a	316.7736	2.5	discard	b6 SNR-based loss weighting
+n/a	314.8893	2.5	keep	b6 symmetric recursion + fp32 cosine combined
+n/a	317.0106	2.5	discard	b6 velocity magnitude rescaling
+n/a	316.8315	2.5	discard	b7 cosine weight 2.0 with symmetric
+n/a	316.4924	2.5	discard	b7 cosine t-schedule (heavier at ends)
+n/a	0.0000	0.0	crash	b7 direction-only prediction (bug: huber undefined)
+n/a	314.7811	2.5	keep	b7 self-distillation from deeper recursion
+n/a	0.0000	0.0	crash	b7 gated skip (assertion error: new param)
+n/a	332.0692	2.5	discard	b7 mixup data augmentation
+n/a	314.5713	2.5	keep	b7 noise-adaptive recursion depth (more cycles for noisy)
+n/a	314.6909	2.5	keep	b7 self-play consistency training
+n/a	316.7372	2.5	discard	b8 direction-only loss (fixed)
+n/a	314.3755	2.5	keep	b8 dual head: velocity + x0 reconstruction (0.1 weight)
+n/a	345.5055	2.5	discard	b8 EMA 0.995 (too fast)
+n/a	371.9069	2.5	discard	b8 logit-normal t sampling std=0.5
+n/a	316.9382	2.5	discard	b8 warmup 20%
+n/a	316.2413	2.5	discard	b8 min-SNR-gamma weighting gamma=5
+n/a	314.8997	2.5	discard	b8 sinusoidal positional embedding
+n/a	314.9567	2.5	discard	b8 self-play + noise adaptive combined
+n/a	316.8524	2.5	discard	b9 cosine weight 0.75
+n/a	316.7157	2.5	discard	b9 cross-attention injection
+n/a	315.6285	2.5	discard	b9 detach z_H from z_L gradients
+n/a	316.5824	2.5	discard	b9 multi-head output (3 heads averaged)
+n/a	323.4076	2.5	discard	b9 noise injection in recursion 0.01
+n/a	354.0453	2.5	discard	b9 normalized injection (catastrophic)
+n/a	321.7669	2.5	discard	b9 x0 reconstruction weight 0.3
+n/a	0.0000	0.0	crash	b9 zero-init reverse (shape mismatch)
+n/a	319.4884	2.5	discard	b10 anti-thetic t sampling
+n/a	316.6213	2.5	discard	b10 AdamAtan2 optimizer
+n/a	315.7323	2.5	discard	b10 classifier-free guidance scale=1.5
+n/a	314.7479	2.5	discard	b10 focal velocity loss (sqrt weighting)
+n/a	318.2534	2.5	discard	b10 Oja Hebbian update on z_L_init
+n/a	346.5786	2.5	discard	b10 random erasing augmentation
+n/a	314.7436	2.5	discard	b10 SSIM loss component
+n/a	0.0000	0.0	crash	b10 two-timescale (variable scoping bug)
+n/a	315.6028	2.5	discard	b11 CFG scale 4.0 (15% label dropout)
+n/a	318.9648	2.5	discard	b11 CFG scale 7.0 (15% label dropout)
+n/a	315.7523	2.5	discard	b11 consistency loss (adjacent t agree on x0)
+n/a	314.4961	2.5	discard	b11 exponential decay on injection residuals
+n/a	357.6165	2.5	discard	b11 progressive loss annealing (catastrophic)
+n/a	314.7380	2.5	discard	b11 multi-resolution recursion (8x8 low-res pass)
+n/a	317.5287	2.5	discard	b11 SSIM on x0_hat image space
+n/a	325.3943	2.5	discard	b11 stratified t sampling
+n/a	319.5038	2.5	discard	b12 accum8 batch512
+n/a	316.0963	2.5	discard	b12 EMA warmup 10%
+n/a	317.3535	2.5	discard	b12 GAN discriminator head
+n/a	323.8775	2.5	discard	b12 Huber beta=0.5
+n/a	317.1351	2.5	discard	b12 patch masking 25%
+n/a	316.0368	2.5	discard	b12 online reflow self-distillation
+n/a	319.0192	2.5	discard	b12 U-shaped timestep distribution
+n/a	317.4162	2.5	discard	b12 velocity clipping
+n/a	319.5038	2.5	discard	b12 gradient accum 8 (batch 512)
+n/a	316.0963	2.5	discard	b12 EMA warmup (skip first 10%)
+n/a	317.3535	2.5	discard	b12 GAN discriminator head (0.01 weight)
+n/a	323.8775	2.5	discard	b12 SmoothL1 beta=0.5
+n/a	317.1351	2.5	discard	b12 patch masking 25% MAE-style
+n/a	316.0368	2.5	discard	b12 online reflow (self-distill straight pairs)
+n/a	319.0192	2.5	discard	b12 U-shaped timestep distribution
+n/a	317.4162	2.5	discard	b12 velocity clipping to 2x target norm
+n/a	316.7832	2.5	discard	pq multi_step_velocity_loss (z_H deep supervision)
+n/a	314.6810	2.5	discard	pq learned_injection_gate (sigmoid gating)
+n/a	315.2348	2.5	discard	pq denoising_as_recursion (mini-ODE in training)
+n/a	319.2997	2.5	discard	pq token_mixing_mlp (replace attention)
+n/a	315.9530	2.5	discard	pq target_ema_teacher (EMA distillation)
+n/a	315.1903	2.5	discard	pq per_patch_loss_weighting (hard patch focus)
+n/a	316.1516	2.5	discard	pq stochastic_recursion_depth
+n/a	0.0000	0.0	crash	pq contrastive_velocity (NaN at step 4)
+n/a	0.0000	0.0	crash	b13 x0-prediction (eval crash: x not available in ODE)
+n/a	315.1884	2.5	discard	b13 Euler-aware loss (penalize 1-step integration error)
+n/a	316.5255	2.5	discard	b13 Euler step loss weight 0.2
+n/a	322.8696	2.5	discard	b13 paired noise variance reduction
+n/a	317.0500	2.5	discard	b13 cosine weight 0.8
+n/a	315.3513	2.5	discard	b13 skip attention alternating L-cycles
+n/a	320.6199	2.5	discard	b13 label smoothing (10% random class mix)
+n/a	317.1408	2.5	discard	b13 cosine decay 1.0->0.2 over training
+n/a	318.1491	2.5	discard	b14 latent mixup (Beta 0.4)
+n/a	315.9362	2.5	discard	b14 SWA last 30% of training
+n/a	316.8781	2.5	discard	b14 dual timestep (high+low noise per image)
+n/a	350.1682	2.5	discard	b14 projection head for velocity matching
+n/a	314.7741	2.5	discard	b14 progressive growth (extra experiments)
+n/a	330.3868	2.5	discard	b14 feature dropout 20% on conditioning
+n/a	314.1982	2.5	keep	b14 progressive EMA (0.99->0.9999 over training)
+n/a	335.3331	2.5	discard	b14 hinge loss margin=0.1
+n/a	315.1198	2.5	discard	pq2 condition_annealing_sampling (CADS-style)
+n/a	314.7741	2.5	discard	pq2 progressive_growing_recursion (curriculum)
+n/a	347.8173	2.5	discard	pq2 noise_prediction_target (eps+velocity dual)
+n/a	379.6308	2.5	discard	pq2 residual_prediction (naive velocity + correction)
+n/a	314.2865	2.6	keep	pq3 spatial_smoothing_conv (3x3 depthwise + gated blend)
+n/a	316.7922	5.1	discard	pq3 spatial_smooth_only_output (conv at final z_H only)
+n/a	314.7648	5.1	discard	pq3 spatial_smooth_every_other (conv at alternating l_level)
+n/a	314.4110	5.1	discard	pq4 5x5 kernel spatial smoothing
+n/a	316.4448	5.1	discard	pq4 spatial smooth + CADS condition annealing
+n/a	0.0000	0.0	crash	pq4 spatial smooth + learned gate (device mismatch)
+n/a	314.4626	5.1	discard	pq4 regular 3x3 conv (not depthwise)
+n/a	314.3235	5.1	discard	pq4 spatial gate init 1.0 (stronger blending)
+n/a	314.5106	5.1	discard	pq4 spatial smooth + EMA teacher distillation
+n/a	314.8577	5.1	discard	pq4 spatial smooth + progressive recursion
+n/a	0.0000	0.0	crash	pq4 dual spatial smooth (assertion error)
