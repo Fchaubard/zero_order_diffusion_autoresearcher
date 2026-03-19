@@ -281,7 +281,7 @@ class RecursiveDiT(nn.Module):
 
         # Spatial smoothing: 3x3 depthwise conv for local patch blending (gated, starts as no-op)
         self.spatial_smooth = nn.Conv2d(config.n_embd, config.n_embd, 3, padding=1, groups=config.n_embd, bias=False)
-        self.spatial_gate = nn.Parameter(torch.tensor(0.0))
+        self.spatial_gate = nn.Parameter(torch.zeros(config.n_embd))
         self._patch_grid = config.img_size // config.patch_size
 
         # Fixed initial latent states (TRM-style: buffers, not parameters)
@@ -315,7 +315,7 @@ class RecursiveDiT(nn.Module):
         g = self._patch_grid
         x_2d = x.transpose(1, 2).reshape(B, C, g, g)
         x_smooth = self.spatial_smooth(x_2d).reshape(B, C, N).transpose(1, 2)
-        x = x + torch.sigmoid(self.spatial_gate) * x_smooth
+        x = x + torch.sigmoid(self.spatial_gate).unsqueeze(0).unsqueeze(0) * x_smooth
         return x
 
     @torch.no_grad()
@@ -1102,7 +1102,7 @@ while True:
         if progress < 0.2:
             with torch.no_grad():
                 model.spatial_smooth.weight.zero_()
-                model.spatial_gate.fill_(0.0)
+                model.spatial_gate.zero_()
         # Progressive EMA: decay increases from 0.99 to 0.9999 over training
         current_decay = 0.99 + progress * 0.0099  # 0.99 -> 0.9999
         with torch.no_grad():
