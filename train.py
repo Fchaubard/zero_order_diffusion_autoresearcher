@@ -28,6 +28,7 @@ import triton
 import triton.language as tl
 
 import numpy as np
+import wandb
 from prepare import IMG_SIZE, IMG_CHANNELS, NUM_CLASSES, TIME_BUDGET, FlowMatching, make_dataloader, evaluate_fid, InceptionFeatureExtractor
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ train_group.add_argument("--lr-schedule", type=str, default="linear",
 train_group.add_argument("--sigma-min", type=float, default=1e-4,
     help="Flow matching minimum variance for numerical stability")
 train_group.add_argument("--time-budget", type=int, default=TIME_BUDGET,
-    help="Training time budget in seconds")
+    help="Training time budget in seconds")  # RULE: strict 1-hour (3600s) budget per experiment
 train_group.add_argument("--seed", type=int, default=42,
     help="Random seed for reproducibility")
 train_group.add_argument("--warmup-steps", type=int, default=10,
@@ -129,8 +130,11 @@ spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
 spsa_group.add_argument("--denoising-steps", type=int, default=20,
     help="Number of ODE steps for full denoising during SPSA training (T)")
 spsa_group.add_argument("--t-schedule", type=str, default="fixed",
-    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive", "curriculum_weighted", "curriculum_smooth"],
-    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), curriculum_step (T_min then jump to T_max), curriculum_mix (T_min then random T_min/T_max), reverse (T_max->T_min), cyclic (alternate T_min/T_max), stochastic (random T per step), stochastic_pert (random T per perturbation), phased (sequential T phases with LR restart per phase)")
+    choices=["fixed", "linear", "lognormal", "exponential", "curriculum", "curriculum_exp", "curriculum_step", "curriculum_mix", "reverse", "cyclic", "stochastic", "stochastic_pert", "phased", "curriculum_stoch", "curriculum_sawtooth", "adaptive", "curriculum_weighted", "curriculum_smooth", "sinusoidal"],
+    help="T schedule: fixed, linear (ramp T_min->T_max), lognormal (sample), exponential (more time at low T), curriculum (T_min for 60%% then ramp), sinusoidal (oscillate T_min->T_max with configurable wavelength)")
+spsa_group.add_argument("--t-sin-wavelength", type=int, default=100,
+    help="Wavelength in steps for sinusoidal T schedule. T oscillates between t_min and t_max. "
+         "E.g., 100 = full sine cycle every 100 steps.")
 spsa_group.add_argument("--t-min", type=int, default=2,
     help="Minimum T for linear schedule (start of training)")
 spsa_group.add_argument("--t-max", type=int, default=50,
@@ -160,13 +164,21 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_fft_mse", "denoising_grad_match",
              "denoising_mae_cosine", "denoising_mae_mse",
              "denoising_flow_match", "denoising_flow_match_mae",
-             "denoising_gauss_legendre", "denoising_cosine_progressive"],
+             "denoising_gauss_legendre", "denoising_cosine_progressive",
+             "gl_diversity", "gl_spectral", "diversity_mse", "gl_class_diversity",
+             "class_ce", "gl_class_ce",
+             "autoreg_mse_ce", "autoreg_ce"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
-    help="Fraction of training to use denoising MSE before switching to --spsa-loss-type. "
-         "E.g. 0.3 = use MSE for first 30%%, then switch to target loss (enables warm start for perceptual losses)")
+    help="Fraction of training to use --warmup-loss-type before switching to --spsa-loss-type. "
+         "E.g. 0.3 = use warmup loss for first 30%%, then switch to target loss.")
+spsa_group.add_argument("--warmup-loss-type", type=str, default="denoising",
+    help="Loss type to use during warmup phase (first --loss-warmup-frac of training). "
+         "Default: 'denoising' (MSE). Try 'contrastive' to break mean prediction before GL.")
 spsa_group.add_argument("--vary-noise", action="store_true",
     help="Vary noise seed each step (prevents overfitting to one noise realization in fixed-batch mode)")
+spsa_group.add_argument("--fixed-noise-seed", action="store_true",
+    help="Use constant noise_seed=42 even in random-batch mode (diagnostic: isolate noise vs data variance)")
 spsa_group.add_argument("--multi-noise", action="store_true",
     help="Use different noise seeds per perturbation within each step. Gradient averages over noise "
          "realizations AND parameter perturbations, reducing overfitting to one noise instance.")
@@ -209,7 +221,7 @@ spsa_group.add_argument("--no-zero-init", action="store_true",
 spsa_group.add_argument("--layerwise-spsa", action="store_true",
     help="Perturb one module at a time instead of all params (better gradient estimates)")
 spsa_group.add_argument("--fixed-batch-size", type=int, default=0,
-    help="If > 0, pre-load this many images for SPSA training")
+    help="If > 0, pre-load this many images for SPSA training")  # AVOID: train on full ImageNet, not fixed batch
 spsa_group.add_argument("--fixed-batch-mode", type=str, default="cycle",
     choices=["cycle", "all"],
     help="cycle: train on 1 image at a time; all: train on all fixed images every step")
@@ -224,6 +236,25 @@ spsa_group.add_argument("--fixed-batch-pool", type=int, default=0,
          "fixed_batch_size images each step. Reduces memorization while keeping SPSA "
          "deterministic per step. E.g., --fixed-batch-pool 96 --fixed-batch-size 48 "
          "means each step sees a random subset of 48 from 96 pre-loaded images.")
+spsa_group.add_argument("--batch-reuse-steps", type=int, default=1,
+    help="Reuse same data batch for N consecutive SPSA steps before refreshing from dataloader. "
+         "Reduces gradient noise from batch variation while still training on full dataset. "
+         "E.g., --batch-reuse-steps 10 means each unique batch gets 10 SPSA updates before moving on.")
+spsa_group.add_argument("--data-curriculum", type=int, default=0,
+    help="Data curriculum: start training on a pool of N images (like fixed-batch), "
+         "then grow the pool by end of training. "
+         "E.g., --data-curriculum 48 = start with 48 images, grow to --data-curriculum-max. "
+         "Motivation: SPSA works on fixed batch (193 FID) but fails on random batches (317 FID). "
+         "Gradual expansion lets model first learn on small set, then generalize.")
+spsa_group.add_argument("--data-curriculum-max", type=int, default=50000,
+    help="Maximum pool size for data curriculum (default: 50000). "
+         "Smaller values = less noise, but less diversity.")
+spsa_group.add_argument("--data-curriculum-growth", type=str, default="quadratic",
+    choices=["linear", "quadratic", "cubic"],
+    help="Growth schedule for data curriculum pool. "
+         "quadratic (default): pool_size = init + (max-init)*p^2. "
+         "cubic: pool_size = init + (max-init)*p^3 (slowest growth). "
+         "linear: pool_size = init + (max-init)*p.")
 spsa_group.add_argument("--loss-explosion-guard", action="store_true",
     help="Skip gradient updates when loss spikes >2x the running EMA. "
          "Prevents divergence from bad SPSA gradient estimates.")
@@ -346,6 +377,19 @@ spsa_group.add_argument("--loss-lr-scale", action="store_true",
          "High loss (early training) → higher effective LR for fast progress. "
          "Low loss (late training) → lower effective LR for fine-tuning. "
          "Loss-adaptive rather than time-based LR scheduling.")
+spsa_group.add_argument("--loss-lr-ema", type=float, default=0.0,
+    help="EMA decay for loss-lr-scale ratio smoothing (0=raw loss, 0.99=heavy smoothing). "
+         "Smooths the loss ratio used by --loss-lr-scale to prevent noisy LR oscillations. "
+         "E.g., 0.99 = 100-step effective window. Only used with --loss-lr-scale.")
+spsa_group.add_argument("--loss-lr-power", type=float, default=1.0,
+    help="Power exponent for loss-lr-scale ratio. ratio^power. "
+         "power<1 = gentler scaling (sqrt at 0.5). power>1 = more aggressive (squared at 2.0). "
+         "Only used with --loss-lr-scale. Default 1.0 = linear.")
+spsa_group.add_argument("--batch-growth", type=int, default=0,
+    help="Starting number of fixed images for curriculum batch growth (0=disabled). "
+         "Start training with this many images, linearly grow to --fixed-batch-size over "
+         "curriculum-frac of training. Stronger gradients early from fewer images. "
+         "E.g., --batch-growth 16 --fixed-batch-size 48 = grow from 16 to 48 images.")
 spsa_group.add_argument("--sparse-pert", type=float, default=0.0,
     help="Sparse perturbation fraction (0=disabled, 0.1=10%% of params perturbed per direction). "
          "Only perturbs a random subset of parameters each step. Lower dimensionality → "
@@ -384,10 +428,18 @@ spsa_group.add_argument("--ssim-weight", type=float, default=0.0,
     help="Add SSIM loss at denoising endpoint with this weight. "
          "SSIM captures structural similarity (luminance, contrast, structure) that MSE misses. "
          "E.g., 0.3 means final_loss = MSE + 0.3*(1-SSIM). Zero-order friendly since non-differentiable.")
+spsa_group.add_argument("--diversity-weight", type=float, default=0.0,
+    help="Anti-mean-prediction: penalize low diversity in velocity predictions across the batch. "
+         "Adds -weight * std(velocity) to GL loss. Mean predictor outputs identical velocities → 0 std → high penalty.")
 spsa_group.add_argument("--kalman-grad", action="store_true",
     help="Use Kalman-filtered gradient estimation. Maintains a state estimate and uncertainty "
          "for the gradient, updating with each new noisy observation. Reduces noise in gradient "
          "estimates over time while adapting to changing gradients. program.md suggests this.")
+spsa_group.add_argument("--kalman-loss", action="store_true",
+    help="Apply Kalman filtering to loss values L(theta+eps*z) and L(theta-eps*z) before "
+         "computing the SPSA gradient estimate. Smooths the loss estimates across perturbations "
+         "and sub-batches rather than smoothing the gradient. Better noise reduction when using "
+         "large batch + many perturbations.")
 spsa_group.add_argument("--vel-match", type=float, default=0.0,
     help="Velocity matching auxiliary loss weight. At each GL node, compute MSE between "
          "predicted velocity and analytical target velocity v_target=(x_b-x)/(1-t). "
@@ -1017,6 +1069,8 @@ class SPSATrainer:
         self._kalman_P = None  # state uncertainty per group (scalar)
         self._kalman_R = None  # observation noise estimate per group
         self._kalman_Q = 0.05  # process noise (gradient changes between steps)
+        # Kalman loss filter state
+        self.kalman_loss = False  # set from args after construction
 
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
@@ -1039,6 +1093,13 @@ class SPSATrainer:
 
         total_loss = 0.0
         _all_pert_losses = []  # per-perturbation losses for variance tracking
+
+        # Reset Kalman loss filter state for this step
+        if self.kalman_loss and hasattr(self, '_kl_state'):
+            del self._kl_state
+            del self._kl_P
+            del self._kl_R
+            del self._kl_count
 
         # For forward-FD or 1.5-SPSA, get clean loss once per iteration
         if self.use_curvature or self.forward_fd:
@@ -1202,6 +1263,35 @@ class SPSATrainer:
                         grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
                     else:
                         grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
+
+            # Kalman loss filter: smooth per-perturbation loss differences
+            # Maintains running estimate of the mean loss difference with adaptive noise model
+            # Downweights outlier perturbations that have high loss variance
+            if self.kalman_loss:
+                loss_diff = loss_plus - loss_minus  # raw loss difference for this perturbation
+                if not hasattr(self, '_kl_state'):
+                    # First perturbation: initialize state
+                    self._kl_state = loss_diff
+                    self._kl_P = 1.0  # state uncertainty
+                    self._kl_R = 1.0  # observation noise
+                    self._kl_count = 1
+                else:
+                    self._kl_count += 1
+                    # Innovation
+                    innov = loss_diff - self._kl_state
+                    innov_sq = innov * innov
+                    # Update observation noise estimate (EMA)
+                    self._kl_R = 0.8 * self._kl_R + 0.2 * innov_sq
+                    # Kalman predict + update
+                    P_pred = self._kl_P + 0.01  # small process noise
+                    K = P_pred / (P_pred + self._kl_R + 1e-10)
+                    self._kl_state = self._kl_state + K * innov
+                    self._kl_P = (1 - K) * P_pred
+                # Use Kalman-filtered loss difference for gradient
+                if self.use_curvature:
+                    grad_coeff = self._kl_state / (2 * self.epsilon * self.n_perts * curvature)
+                else:
+                    grad_coeff = self._kl_state / (2 * self.epsilon * self.n_perts)
 
             # Clip gradient coefficient to prevent outlier perturbations from diverging
             if self.grad_clip > 0:
@@ -2072,6 +2162,9 @@ else:
     if args.kalman_grad:
         trainer.kalman_grad = True
         print(f"  Kalman gradient filter: adaptive noise-aware gradient smoothing")
+    if args.kalman_loss:
+        trainer.kalman_loss = True
+        print(f"  Kalman loss filter: smooth per-perturbation loss differences")
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -2143,6 +2236,22 @@ if args.solver == "spsa":
         spsa_ref_sigma[0] = np.load(_os.path.join(STATS_DIR, "fid_sigma.npy"))
         print(f"Inception feature matching: loaded reference stats (dim={spsa_ref_mu[0].shape[0]})")
 
+    # InceptionV3 classifier for class_ce loss (WITH classification head, not features)
+    spsa_classifier = [None]
+    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce")
+    if args.spsa_loss_type in _ce_loss_types or getattr(args, 'warmup_loss_type', 'denoising') in _ce_loss_types:
+        from torchvision.models import inception_v3, Inception_V3_Weights
+        from torchvision import transforms as _tv_transforms
+        _clf_model = inception_v3(weights=Inception_V3_Weights.DEFAULT)
+        _clf_model.eval()
+        _clf_model = _clf_model.to(device)
+        _clf_transform = _tv_transforms.Compose([
+            _tv_transforms.Resize((299, 299), antialias=True),
+            _tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        spsa_classifier[0] = (_clf_model, _clf_transform)
+        print(f"InceptionV3 classifier loaded for class_ce loss (1000-way ImageNet)")
+
     # Track which loss type is active (for logging during warmup phase)
     active_loss_type = [args.spsa_loss_type]
 
@@ -2174,14 +2283,13 @@ if args.solver == "spsa":
             x_b = x_b[indices]
             y_b = y_b[indices]
 
-        # Loss warmup: use denoising MSE for first loss_warmup_frac of training
-        # This provides strong gradient signal when model output is noise,
-        # then switches to the target (possibly non-differentiable) loss
+        # Loss warmup: use warmup-loss-type for first loss_warmup_frac of training
+        # E.g. contrastive warmup to break mean prediction, then switch to GL
         loss_type = args.spsa_loss_type
         if args.loss_warmup_frac > 0:
             progress_now = min(total_training_time / args.time_budget, 1.0)
             if progress_now < args.loss_warmup_frac:
-                loss_type = "denoising"  # warm start with MSE
+                loss_type = getattr(args, 'warmup_loss_type', 'denoising')
             active_loss_type[0] = loss_type
         # Polish loss: switch to a different loss during the polish phase
         # This enables training with GL/MSE, then fine-tuning with FID/perceptual
@@ -2582,7 +2690,14 @@ if args.solver == "spsa":
                     ssim_map = ((2*mu_x*mu_y + C1) * (2*sigma_xy + C2)) / \
                                ((mu_x**2 + mu_y**2 + C1) * (sigma_x2 + sigma_y2 + C2))
                     ssim_loss = (1.0 - ssim_map.mean()).item()
-                    return mse + args.ssim_weight * ssim_loss
+                    mse = mse + args.ssim_weight * ssim_loss
+                # Anti-mean-prediction: penalize low diversity in generated images
+                # Mean predictor → all outputs identical → std=0 → penalty is maximal
+                if getattr(args, 'diversity_weight', 0.0) > 0:
+                    # Diversity = std of generated images across batch (higher = more diverse)
+                    gen_std = x.float().std(dim=0).mean().item()
+                    # Subtract from loss: more diversity = lower loss
+                    mse = mse - args.diversity_weight * gen_std
                 return mse
             elif loss_type == "denoising_warm_restart":
                 # Warm restart denoising: run ODE, compute MSE, then use the
@@ -3759,6 +3874,286 @@ if args.solver == "spsa":
                     cross_term = 0.0  # fallback: just use mean term
                 fid_approx = mean_term + trace_gen + trace_ref - 2 * cross_term
                 return fid_approx
+            elif loss_type == "gl_diversity":
+                # GL denoising + STRONG self-supervised diversity penalty
+                # KEY INSIGHT: Target-dependent losses (MSE/contrastive) converge to mean
+                # prediction on random batches because batch noise > perturbation signal.
+                # Self-supervised diversity is TARGET-INDEPENDENT: it measures properties
+                # of model outputs alone. Mean prediction → all outputs identical → max penalty.
+                # diversity_weight controls balance (default via args, fallback=10.0)
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                # GL quadrature integration
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                mse = 0.0
+                for node, weight in zip(gl_nodes, gl_weights):
+                    t_val = node
+                    x_t = (1 - t_val) * noise + t_val * x_b
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    v_pred = model(x_t, t_tensor, class_labels=y_b)
+                    v_target = x_b - noise
+                    mse += weight * F.mse_loss(v_pred.float(), v_target.float()).item()
+                # Self-supervised diversity: pairwise distance of model outputs
+                # Generate final images to measure diversity
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                B = x_gen.shape[0]
+                x_flat = x_gen.reshape(B, -1).float()
+                # Mean pairwise L2 distance (higher = more diverse)
+                pw_dists = torch.cdist(x_flat, x_flat, p=2)
+                mask = 1 - torch.eye(B, device=dev)
+                mean_pw_dist = (pw_dists * mask).sum() / (B * (B - 1))
+                # Diversity weight: use arg if available, else 10.0
+                div_w = getattr(args, 'diversity_weight', 0.0)
+                if div_w == 0.0:
+                    div_w = 10.0  # strong default for gl_diversity
+                # Combined: GL denoising - diversity_weight * pairwise_distance
+                # Lower is better, so subtract diversity (more diverse = lower loss)
+                return mse - div_w * mean_pw_dist.item()
+            elif loss_type == "gl_spectral":
+                # GL denoising + high-frequency energy penalty
+                # Mean prediction has ZERO high-frequency content (it's a smooth average).
+                # Real images have rich high-frequency edges/texture.
+                # Penalize low high-freq energy to fight mean prediction.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                # GL quadrature for denoising
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                mse = 0.0
+                for node, weight in zip(gl_nodes, gl_weights):
+                    t_val = node
+                    x_t = (1 - t_val) * noise + t_val * x_b
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    v_pred = model(x_t, t_tensor, class_labels=y_b)
+                    v_target = x_b - noise
+                    mse += weight * F.mse_loss(v_pred.float(), v_target.float()).item()
+                # Generate final images for spectral analysis
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                # FFT: measure high-frequency energy ratio
+                fft_gen = torch.fft.fft2(x_gen.float())
+                mag = torch.abs(fft_gen)
+                H, W = mag.shape[-2], mag.shape[-1]
+                # High-freq = outside center 50% of spectrum
+                h4, w4 = H // 4, W // 4
+                # Shift so DC is center
+                mag_shifted = torch.fft.fftshift(mag, dim=(-2, -1))
+                total_energy = mag_shifted.sum().item() + 1e-8
+                center = mag_shifted[..., h4:3*h4, w4:3*w4]
+                low_freq_energy = center.sum().item()
+                high_freq_ratio = 1.0 - (low_freq_energy / total_energy)
+                # Penalty: higher ratio = more high-freq = better
+                # Negate to make it a penalty (less high-freq = higher loss)
+                spec_w = getattr(args, 'diversity_weight', 0.0)
+                if spec_w == 0.0:
+                    spec_w = 5.0  # default spectral weight
+                return mse - spec_w * high_freq_ratio
+            elif loss_type == "diversity_mse":
+                # MSE to targets + strong diversity penalty
+                # Simpler than gl_diversity: endpoint MSE + pairwise distance
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                mse = F.mse_loss(x.float(), x_b.float()).item()
+                B = x.shape[0]
+                x_flat = x.reshape(B, -1).float()
+                pw_dists = torch.cdist(x_flat, x_flat, p=2)
+                mask = 1 - torch.eye(B, device=dev)
+                mean_pw_dist = (pw_dists * mask).sum() / (B * (B - 1))
+                div_w = getattr(args, 'diversity_weight', 0.0)
+                if div_w == 0.0:
+                    div_w = 10.0
+                return mse - div_w * mean_pw_dist.item()
+            elif loss_type == "gl_class_diversity":
+                # GL denoising + class-conditioned diversity
+                # Same class → outputs should be similar
+                # Different class → outputs should be different
+                # This is TARGET-INDEPENDENT (depends on class labels, not pixel targets)
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                # GL denoising
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                mse = 0.0
+                for node, weight in zip(gl_nodes, gl_weights):
+                    t_val = node
+                    x_t = (1 - t_val) * noise + t_val * x_b
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    v_pred = model(x_t, t_tensor, class_labels=y_b)
+                    v_target = x_b - noise
+                    mse += weight * F.mse_loss(v_pred.float(), v_target.float()).item()
+                # Generate final images
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                B = x_gen.shape[0]
+                x_flat = x_gen.reshape(B, -1).float()
+                # Different-class pairs should have high distance
+                pw_dists = torch.cdist(x_flat, x_flat, p=2)
+                # Class mask: 1 if different class, 0 if same
+                labels = y_b.view(-1, 1)
+                diff_class = (labels != labels.T).float()
+                n_diff = diff_class.sum().item() + 1e-8
+                # Mean inter-class distance (want this to be HIGH)
+                inter_class_dist = (pw_dists * diff_class).sum().item() / n_diff
+                div_w = getattr(args, 'diversity_weight', 0.0)
+                if div_w == 0.0:
+                    div_w = 5.0
+                return mse - div_w * inter_class_dist
+            elif loss_type == "class_ce":
+                # Cross-entropy classification loss using frozen InceptionV3
+                # Generate images, classify them with InceptionV3, compute CE against true class.
+                # TARGET-INDEPENDENT: depends on class labels (stable), not pixel targets (noisy).
+                # Mean prediction → identical outputs → classifier predicts 1 class → high CE for other classes.
+                # Diverse class-specific outputs → low CE → good loss signal.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x, t_tensor, class_labels=y_b)
+                    x = x + velocity * dt
+                # Classify generated images with InceptionV3
+                clf_model, clf_transform = spsa_classifier[0]
+                # Images are in [0, 1] range, need to apply InceptionV3 preprocessing
+                x_clf = clf_transform(x.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                # Cross-entropy loss: true class = y_b (ImageNet class labels)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                return ce_loss
+            elif loss_type == "gl_class_ce":
+                # GL denoising + cross-entropy classification loss
+                # Combines denoising quality signal with class-discriminative signal.
+                import math as _math
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                # GL quadrature for denoising
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                mse = 0.0
+                for node, weight in zip(gl_nodes, gl_weights):
+                    t_val = node
+                    x_t = (1 - t_val) * noise + t_val * x_b
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    v_pred = model(x_t, t_tensor, class_labels=y_b)
+                    v_target = x_b - noise
+                    mse += weight * F.mse_loss(v_pred.float(), v_target.float()).item()
+                # Generate final images for classification
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                # Classify with InceptionV3
+                clf_model, clf_transform = spsa_classifier[0]
+                x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                # Combined: GL + ce_weight * CE
+                ce_w = getattr(args, 'diversity_weight', 0.0)
+                if ce_w == 0.0:
+                    ce_w = 1.0
+                return mse + ce_w * ce_loss
+            elif loss_type == "autoreg_mse_ce":
+                # Unified autoregressive trajectory: NO teacher forcing.
+                # One ODE trajectory from noise → image. Compute velocity MSE at
+                # intermediate steps (GL-weighted) AND InceptionV3 CE at endpoint.
+                # This is ~20 fwd passes total vs 24 for gl_class_ce.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                v_target = x_b - noise  # constant velocity (straight ODE path)
+                # GL quadrature nodes/weights for weighting intermediate MSE
+                gl_nodes = [0.06943, 0.33001, 0.66999, 0.93057]
+                gl_weights = [0.17393, 0.32607, 0.32607, 0.17393]
+                gl_idx = 0
+                mse = 0.0
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    # Check if this step is near a GL node
+                    if gl_idx < len(gl_nodes) and t_val >= gl_nodes[gl_idx] - 0.5 / T:
+                        mse += gl_weights[gl_idx] * F.mse_loss(velocity.float(), v_target.float()).item()
+                        gl_idx += 1
+                    x_gen = x_gen + velocity * dt
+                # Classify endpoint with InceptionV3
+                clf_model, clf_transform = spsa_classifier[0]
+                x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                ce_w = getattr(args, 'diversity_weight', 0.0)
+                if ce_w == 0.0:
+                    ce_w = 1.0
+                return mse + ce_w * ce_loss
+            elif loss_type == "autoreg_ce":
+                # Pure autoregressive classification: run ODE, classify endpoint.
+                # Same as class_ce but named explicitly for clarity.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                clf_model, clf_transform = spsa_classifier[0]
+                x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad():
+                    logits = clf_model(x_clf)
+                ce_loss = F.cross_entropy(logits, y_b).item()
+                return ce_loss
 
     # Wrap loss function with loss scaling (effective LR multiplier for tied lr=eps)
     if _loss_scale != 1.0:
@@ -3842,6 +4237,52 @@ if args.fixed_batch_size > 0 and args.solver == "spsa":
         fixed_buffer = fixed_buffer[:args.fixed_batch_size]
         print(f"  Loaded {len(fixed_buffer)} images (cycling 1-at-a-time)")
 
+# Data curriculum: start with small pool, grow to full dataset
+_data_curriculum_pool = None
+if getattr(args, 'data_curriculum', 0) > 0 and args.solver == "spsa" and args.fixed_batch_size == 0:
+    _dc_init_size = args.data_curriculum
+    _data_curriculum_pool = []
+    print(f"Data curriculum: pre-loading initial pool of {_dc_init_size} images...")
+    while len(_data_curriculum_pool) < _dc_init_size:
+        x_b, y_b, _ = next(train_loader)
+        for j in range(x_b.shape[0]):
+            _data_curriculum_pool.append((x_b[j:j+1], y_b[j:j+1]))
+            if len(_data_curriculum_pool) >= _dc_init_size:
+                break
+    _dc_max = getattr(args, 'data_curriculum_max', 50000)
+    _dc_growth = getattr(args, 'data_curriculum_growth', 'quadratic')
+    print(f"  Pool initialized with {len(_data_curriculum_pool)} images (will grow to {_dc_max}, schedule={_dc_growth})")
+
+# Initialize Weights & Biases
+_wandb_config = {k: v for k, v in vars(args).items() if not k.startswith('_')}
+_wandb_config['num_params'] = num_params
+_wandb_config['epsilon_actual'] = SPSA_EPSILON
+# Auto-generate descriptive run name if WANDB_NAME not set
+_wandb_name = os.environ.get("WANDB_NAME")
+if not _wandb_name:
+    _parts = [args.solver]
+    if args.solver == "spsa":
+        _parts.append(f"np{args.n_perts}")
+    _parts.append(f"B{args.total_batch_size}")
+    _parts.append(f"lr{args.lr:.0e}")
+    _parts.append(f"d{args.depth}x{args.repeat_blocks}")
+    _parts.append(f"e{args.n_embd}")
+    if args.fixed_batch_size:
+        _parts.append(f"fix{args.fixed_batch_size}")
+    if getattr(args, 'fixed_noise_seed', False):
+        _parts.append("fixnoise")
+    _parts.append(f"T{args.t_min}-{args.t_max}")
+    _parts.append(f"{args.t_schedule}")
+    _parts.append(f"s{args.seed}")
+    _parts.append(f"{args.time_budget//60}m")
+    _wandb_name = "_".join(str(p) for p in _parts)
+wandb.init(
+    project="zero-order-diffusion",
+    name=_wandb_name,
+    config=_wandb_config,
+    mode="online",
+)
+
 t_start_training = time.time()
 smooth_train_loss = 0
 total_training_time = 0
@@ -3901,8 +4342,18 @@ while True:
                         torch.cat([fixed_pool_buffer[i][0] for i in _pool_indices], dim=0),
                         torch.cat([fixed_pool_buffer[i][1] for i in _pool_indices], dim=0),
                     )
-                # Use all fixed images every step
-                x_b, y_b = fixed_all_batch
+                # Batch growth: use subset of images early, grow to full batch
+                if args.batch_growth > 0 and args.batch_growth < args.fixed_batch_size:
+                    progress = min(total_training_time / args.time_budget, 1.0) if args.time_budget > 0 else 1.0
+                    # Grow during curriculum phase (first curriculum_frac of training)
+                    growth_frac = min(progress / max(args.curriculum_frac, 0.01), 1.0)
+                    n_images = int(args.batch_growth + (args.fixed_batch_size - args.batch_growth) * growth_frac)
+                    n_images = max(args.batch_growth, min(args.fixed_batch_size, n_images))
+                    x_b = fixed_all_batch[0][:n_images]
+                    y_b = fixed_all_batch[1][:n_images]
+                else:
+                    # Use all fixed images every step
+                    x_b, y_b = fixed_all_batch
                 if args.augment_fixed:
                     # Random horizontal flip (deterministic per step for ±epsilon consistency)
                     aug_rng = torch.Generator(device=x_b.device)
@@ -3917,11 +4368,57 @@ while True:
                 x_b, y_b = fixed_buffer[idx]
                 spsa_batches.append((x_b, y_b))
                 noise_seed[0] = idx * 100 + 42
-        else:
-            for _ in range(args.spsa_accum_steps):
-                x_b, y_b, epoch = next(train_loader)
-                spsa_batches.append((x_b, y_b))
+        elif _data_curriculum_pool is not None:
+            # Data curriculum: sample from growing pool
+            progress = min(total_training_time / args.time_budget, 1.0)
+            pool = _data_curriculum_pool
+            pool_size = len(pool)
+            # Grow pool according to schedule (quadratic/cubic/linear)
+            full_size = getattr(args, 'data_curriculum_max', 50000)
+            growth = getattr(args, 'data_curriculum_growth', 'quadratic')
+            if growth == 'cubic':
+                target_pool_size = int(args.data_curriculum + (full_size - args.data_curriculum) * progress ** 3)
+            elif growth == 'linear':
+                target_pool_size = int(args.data_curriculum + (full_size - args.data_curriculum) * progress)
+            else:  # quadratic (default)
+                target_pool_size = int(args.data_curriculum + (full_size - args.data_curriculum) * progress * progress)
+            if pool_size < target_pool_size:
+                # Add images to reach target (efficiently: unpack full batches)
+                n_add = min(target_pool_size - pool_size, 500)  # cap per-step growth
+                _added = 0
+                while _added < n_add:
+                    x_b, y_b, _ = next(train_loader)
+                    for j in range(x_b.shape[0]):
+                        pool.append((x_b[j:j+1], y_b[j:j+1]))
+                        _added += 1
+                        if _added >= n_add:
+                            break
+                if n_add >= 50 or len(pool) % 5000 < n_add:
+                    print(f"  [Data curriculum] Pool: {len(pool)} images (+{n_add}, progress={progress:.1%})")
+            # Sample batch_size images from the pool
+            batch_size = min(args.total_batch_size, len(pool))
+            _dc_rng = torch.Generator()
+            _dc_rng.manual_seed(step * 7 + 42)
+            indices = torch.randperm(len(pool), generator=_dc_rng)[:batch_size]
+            x_batch = torch.cat([pool[i][0] for i in indices], dim=0)
+            y_batch = torch.cat([pool[i][1] for i in indices], dim=0)
+            spsa_batches.append((x_batch, y_batch))
             noise_seed[0] = step * 100
+        else:
+            if args.batch_reuse_steps > 1 and step % args.batch_reuse_steps != 0 and hasattr(args, '_reuse_cache') and len(args._reuse_cache) > 0:
+                # Reuse cached batches from previous step
+                for cached in args._reuse_cache:
+                    spsa_batches.append(cached)
+            else:
+                # Load fresh batches from dataloader
+                if not hasattr(args, '_reuse_cache'):
+                    args._reuse_cache = []
+                args._reuse_cache.clear()
+                for _ in range(args.spsa_accum_steps):
+                    x_b, y_b, epoch = next(train_loader)
+                    spsa_batches.append((x_b, y_b))
+                    args._reuse_cache.append((x_b, y_b))
+            noise_seed[0] = 42 if getattr(args, 'fixed_noise_seed', False) else step * 100
 
         # Pre-generate deterministic t and noise for teacher loss
         # (must be identical across all ±epsilon evaluations within this step)
@@ -4161,6 +4658,14 @@ while True:
                 st['loss_ema_slow'] = None
                 print(f"\n  [Adaptive T] Increasing T to {st['current_T']} at progress {progress:.1%}")
             current_T[0] = st['current_T']
+        elif args.t_schedule == "sinusoidal":
+            # Sinusoidal T schedule: oscillate T between t_min and t_max
+            # T = t_min + (t_max - t_min) * (1 + sin(2π * step / wavelength)) / 2
+            import math
+            phase = 2 * math.pi * step / args.t_sin_wavelength
+            sin_val = (1 + math.sin(phase)) / 2  # maps to [0, 1]
+            frac_T = args.t_min + (args.t_max - args.t_min) * sin_val
+            current_T[0] = max(args.t_min, min(args.t_max, round(frac_T)))
 
         # Batch refresh: periodically load new random images
         if args.batch_refresh_pct > 0 and args.fixed_batch_size > 0 and fixed_buffer is not None:
@@ -4343,9 +4848,19 @@ while True:
         if args.loss_lr_scale:
             if not hasattr(args, '_loss_lr_ref'):
                 args._loss_lr_ref = train_loss_f  # reference loss from first step
+                args._loss_lr_ema_val = train_loss_f  # EMA of loss for smoothing
             if args._loss_lr_ref > 0:
-                loss_ratio = train_loss_f / args._loss_lr_ref
-                trainer.lr = args.lr * lrm * max(0.1, min(3.0, loss_ratio))
+                # Optionally smooth loss with EMA
+                if args.loss_lr_ema > 0:
+                    args._loss_lr_ema_val = args.loss_lr_ema * args._loss_lr_ema_val + (1 - args.loss_lr_ema) * train_loss_f
+                    loss_ratio = args._loss_lr_ema_val / args._loss_lr_ref
+                else:
+                    loss_ratio = train_loss_f / args._loss_lr_ref
+                # Apply power exponent
+                if args.loss_lr_power != 1.0:
+                    loss_ratio = loss_ratio ** args.loss_lr_power
+                _cur_lrm = get_lr_multiplier(min(total_training_time / args.time_budget, 1.0))
+                trainer.lr = args.lr * _cur_lrm * max(0.1, min(3.0, loss_ratio))
 
         # Checkpoint rollback: save good states, restore on divergence
         if args.checkpoint_rollback:
@@ -4572,6 +5087,22 @@ while True:
         loss_tag = f" [{active_loss_type[0]}]"
     print(f"\rstep {step:05d} ({pct_done:.1f}%) [{solver_tag}]{loss_tag} | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | img/sec: {img_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
 
+    _wandb_metrics = {
+        "train/loss": debiased_smooth_loss,
+        "train/loss_raw": train_loss_f,
+        "train/lr_multiplier": lrm,
+        "train/dt_ms": dt * 1000,
+        "train/img_per_sec": img_per_sec,
+        "train/epoch": epoch,
+        "train/progress": progress,
+        "train/remaining_s": remaining,
+    }
+    if args.solver == "spsa" and hasattr(trainer, '_last_loss_std'):
+        _wandb_metrics["spsa/loss_std"] = trainer._last_loss_std
+    if args.solver == "spsa":
+        _wandb_metrics["spsa/current_T"] = current_T[0]
+    wandb.log(_wandb_metrics, step=step)
+
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:
         gc.collect()
@@ -4615,7 +5146,8 @@ class Float32Wrapper(nn.Module):
     def parameters(self):
         return self.model.parameters()
 
-val_fid = evaluate_fid(Float32Wrapper(model_for_eval), flow_matching, args.device_batch_size)
+fid_batch_size = min(args.device_batch_size, 256)  # Cap FID eval batch size to avoid OOM
+val_fid = evaluate_fid(Float32Wrapper(model_for_eval), flow_matching, fid_batch_size)
 
 # Final summary
 t_end = time.time()
@@ -4639,3 +5171,13 @@ if args.solver == "spsa":
     print(f"n_perts:          {args.n_perts}")
     print(f"final_lr:         {trainer.lr:.2e}")
     print(f"final_epsilon:    {trainer.epsilon:.2e}")
+
+wandb.log({
+    "eval/val_fid": val_fid,
+    "eval/peak_vram_mb": peak_vram_mb,
+    "eval/training_seconds": total_training_time,
+    "eval/num_steps": step,
+    "eval/total_images_M": total_images / 1e6,
+    "eval/mfu_percent": steady_state_mfu,
+}, step=step)
+wandb.finish()
