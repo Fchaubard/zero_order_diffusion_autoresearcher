@@ -204,3 +204,6 @@ n/a	287.0782	5.1	discard	pq11 full BPTT + no x0 loss
 n/a	216.8371	5.1	keep	pq12 full BPTT + LR 3e-4
 n/a	111.4698	5.1	keep	pq12 full BPTT + LR 5e-4 *** MASSIVE NEW BEST ***
 n/a	250.7261	5.1	discard	pq12 full BPTT + no spatial smooth + LR 2e-4
+n/a	95.8681	5.1	keep	pq13 full BPTT + LR 7e-4 *** NEW BEST 95.87 ***
+n/a	97.9047	5.1	keep	pq13 full BPTT + LR 1e-3
+n/a	268.0763	5.1	discard	pq13 full BPTT + LR 2e-3 (diverged)
