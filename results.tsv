@@ -215,3 +215,11 @@ n/a	232.9355	9.5	discard	pq14 full BPTT LR 6e-4
 n/a	97.8869	9.5	discard	pq14 full BPTT LR 7e-4 + hflip augmentation
 n/a	287.6801	9.5	discard	pq14 full BPTT LR 7e-4 + TTA 2x (broken)
 n/a	259.9749	9.5	discard	pq14 full BPTT LR 1.5e-3 (too high)
+n/a	93.0173	9.5	discard	pq15 LR 9e-4 + WD 0.01
+n/a	85.0002	9.5	keep	pq15 LR 9e-4 + WD 0.02
+n/a	210.4455	9.5	discard	pq15 LR 9e-4 + WD 0.005 (diverged)
+n/a	95.3061	9.5	discard	pq15 LR 8.5e-4
+n/a	316.2052	9.5	discard	pq15 LR 9.5e-4 (diverged)
+n/a	82.9717	9.5	keep	pq15 LR 9e-4 + hflip *** NEW BEST 82.97 ***
+n/a	267.3800	9.5	discard	pq15 LR 9e-4 + WD 0.01 + hflip (diverged)
+n/a	88.9871	9.5	keep	pq15 LR 1.1e-3
