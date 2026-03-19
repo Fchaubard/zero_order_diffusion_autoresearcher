@@ -419,15 +419,13 @@ class RecursiveDiT(nn.Module):
         z_H = input_emb
         z_L = self.z_L_init.expand(B, N, -1)
 
-        # Recursive refinement (TRM-style two-level hierarchy)
-        # Gradient truncation: only backprop through the last H_cycle
-        with torch.no_grad():
-            for _h in range(self.config.h_cycles - 1):
-                for _l in range(self.config.l_cycles):
-                    z_L = self.l_level(z_L, z_H + input_emb, c)
-                z_H = self.l_level(z_H, z_L, c)
+        # Full BPTT: backprop through ALL H_cycles (no truncation — critical for diffusion!)
+        for _h in range(self.config.h_cycles - 1):
+            for _l in range(self.config.l_cycles):
+                z_L = self.l_level(z_L, z_H + input_emb, c)
+            z_H = self.l_level(z_H, z_L, c)
 
-        # Last H_cycle with gradient tracking + symmetric refinement
+        # Last H_cycle + symmetric refinement
         # At eval: 2x L-cycles for more refinement per ODE step (test-time compute scaling)
         eval_mult = 2 if not self.training else 1
         for _l in range(self.config.l_cycles * eval_mult):
