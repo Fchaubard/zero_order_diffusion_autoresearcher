@@ -65,7 +65,7 @@ Description: Unify the diffusion ODE steps with the recursive cycles. During tra
 Confidence: 6
 Why: The recursive architecture naturally maps to iterative denoising. Currently recursion and ODE are separate (recursion refines within a timestep, ODE integrates across timesteps). Unifying them means the model practices actual denoising during training, not just single-timestep velocity prediction. This is conceptually similar to consistency models but uses the existing recursive structure. Risk: the training signal may be too noisy since early cycles see poor predictions.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -81,7 +81,7 @@ Description: Replace self-attention in RecursiveDiTBlock with a simple token-mix
 Confidence: 6
 Why: The recursive architecture already provides iterative refinement — each pass through the shared block is like another "layer" of processing. Attention's main benefit is long-range spatial mixing, which the recursion also provides (each cycle mixes information globally via the z_H/z_L interaction). MLP-Mixer has shown competitive performance to attention in vision tasks. With 8 recursive passes, even simple per-pass mixing should work. The speed gain means 2-4x more training steps in the same 1-hour budget.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -97,7 +97,7 @@ Description: Use the EMA model as a teacher during training (not just for eval).
 Confidence: 6
 Why: EMA gave us -42 FID at eval time, meaning the EMA weights produce much better predictions. But currently we only USE the EMA at eval — we don't TRAIN toward it. By distilling from EMA during training, the student model gets a smoother, more stable learning signal. This is the same principle as Polyak-Ruppert averaging in optimization theory, but applied as a loss term. The risk is that it creates a circular dependency (teacher is a lagged copy of student), but this has been shown to work in BYOL, DINO, and other self-supervised methods.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -113,7 +113,7 @@ Description: Compute the velocity loss per-patch (not per-pixel averaged), then 
 Confidence: 5
 Why: FID is sensitive to failure modes — a few badly generated patches can tank the whole score. By focusing training on hard patches (faces, textures, fine details), we fix the worst failure modes first. The EMA model provides a stable difficulty estimate. Similar to focal loss but spatially localized. Risk: could overfit to hard patches and neglect easy ones.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -129,7 +129,7 @@ Description: During training, randomly sample the total number of recursive iter
 Confidence: 5
 Why: The model currently always gets exactly 8 L-level passes. It may learn to "spread out" its computation across all 8, doing a little each step. With stochastic depth, it must be prepared to output a good prediction after any number of steps — encouraging each step to be maximally useful. This is related to Graves' ACT (Adaptive Computation Time) and regularization via randomized depth (Huang et al. 2016). Risk: may hurt early training when the model hasn't learned basic patterns yet.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -168,7 +168,7 @@ Description: Instead of predicting the full velocity v, predict a RESIDUAL on to
 Confidence: 4
 Why: Residual learning (He et al. 2016) makes optimization easier by letting the model learn corrections rather than full mappings. The velocity field is complex and varies greatly across timesteps. A residual formulation factors out the "obvious" component, letting the model focus on the hard part. Risk: the naive estimate might not be meaningful, and the residual could have worse conditioning than the original.
 Time of idea generation: 2026-03-18 10:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -184,7 +184,7 @@ Description: From Disney Research's CADS paper — during ODE sampling at eval, 
 Confidence: 7
 Why: CADS (Disney Research 2024) showed this simple trick significantly improves FID by boosting diversity. It prevents the model from "collapsing" to a single mode per class at the final denoising steps. It's free at training time (no changes needed) and only modifies the eval-time conditioning schedule. Very simple to implement — just add a t-dependent scaling to the class embedding in forward when not training.
 Time of idea generation: 2026-03-18 14:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -200,7 +200,7 @@ Description: Start training with h_cycles=1, l_cycles=1 (minimal recursion) and 
 Confidence: 6
 Why: Progressive training has been shown to help in many settings (ProGAN, curriculum learning). The model currently struggles to learn meaningful recursion in 1 hour because it needs to simultaneously learn (1) good features and (2) how to refine iteratively. By starting with shallow recursion, the model first learns good features, then learns to refine them. The shared weights benefit because early training teaches them to be good single-pass processors, and later training teaches them to compose well.
 Time of idea generation: 2026-03-18 14:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -216,7 +216,7 @@ Description: Instead of predicting velocity v = x0 - (1-sigma_min)*noise, predic
 Confidence: 5
 Why: Many successful diffusion models (DDPM, ADM) use epsilon prediction rather than velocity. The argument is that predicting what was added (noise) is easier than predicting the direction of the flow (velocity). Since our model is capacity-limited (shared weights), making the prediction task easier could help it learn faster in the 1-hour budget. The risk is that flow matching was designed for velocity prediction, and the reparameterization might lose some of the flow matching benefits (straight ODE paths).
 Time of idea generation: 2026-03-18 14:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -232,7 +232,7 @@ Description: Add a lightweight 3x3 depthwise convolution between recursive cycle
 Confidence: 8
 Why: Visual inspection of generated samples shows clear 4x4 patch grid artifacts. The model's attention across 256 patches provides global mixing but misses LOCAL spatial relationships between adjacent patches. A 3x3 depthwise conv is the simplest possible fix — it provides nearest-neighbor blending without the O(N^2) cost of attention. Zero-init means it starts as a no-op (no regression risk). This is similar to how ConvNeXt adds local spatial mixing to vision transformers.
 Time of idea generation: 2026-03-18 21:30
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -248,7 +248,7 @@ Description: Apply the spatial smoothing conv ONLY on the final z_H output (afte
 Confidence: 8
 Why: The full spatial_smoothing_conv improved FID (314.29 vs 314.38) but was 4x slower (4727 vs 18000 steps). If we only smooth at the output, we get ~17000 steps with the smoothing benefit. The question is whether intermediate smoothing helps the recursion or if output-stage smoothing is sufficient. Since the model's attention already provides global mixing, the conv mainly needs to fix the final patch boundaries.
 Time of idea generation: 2026-03-18 22:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -264,7 +264,7 @@ Description: Apply spatial smoothing conv every OTHER l_level call instead of ev
 Confidence: 7
 Why: Balances the speed/quality tradeoff of spatial smoothing. Every-call was 4x slower but helped. Every-other should be 2x slower but might capture most of the benefit. The hypothesis is that alternating between global attention and local conv mixing creates a good multi-scale processing pipeline.
 Time of idea generation: 2026-03-18 22:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -280,7 +280,7 @@ Description: Increase the spatial smoothing kernel from 3x3 to 5x5 depthwise con
 Confidence: 7
 Why: The 3x3 kernel was the key breakthrough. A 5x5 kernel provides wider local mixing per step, potentially reducing the number of recursive passes needed for full spatial coherence. The tradeoff is slightly more compute per conv (25 vs 9 multiply-adds per position), but the conv is already a small fraction of the total compute.
 Time of idea generation: 2026-03-18 23:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -296,7 +296,7 @@ Description: Combine spatial smoothing (best architectural change) with conditio
 Confidence: 7
 Why: These address orthogonal problems. Spatial smoothing fixes quality (blockiness), condition annealing fixes diversity. FID measures both quality AND diversity, so fixing both should be additive.
 Time of idea generation: 2026-03-18 23:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -312,7 +312,7 @@ Description: Replace the single Linear output projection with a "shallow yet wid
 Confidence: 7
 Why: The output head is a massive bottleneck — it maps from 768-dim latent to 48-dim (4x4x3 patch) with a single linear layer. This is an extreme compression. A wider head with nonlinearity gives the model more expressive power at the output stage, which directly impacts generation quality. The recursion produces good latent features but the output head can't decode them well.
 Time of idea generation: 2026-03-19 01:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -328,7 +328,7 @@ Description: Use overlapping patches for the patch embedding: instead of non-ove
 Confidence: 7
 Why: The blocky patch artifacts we observed are caused by non-overlapping patches with hard boundaries. Overlapping patches naturally share information at boundaries, providing the same spatial mixing that our spatial smoothing conv does but at the input level. This could be faster than the spatial smoothing conv (which runs 8+ times) since it only runs once at input.
 Time of idea generation: 2026-03-19 01:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -344,7 +344,7 @@ Description: Replace the 2D spatial smooth (which requires costly reshape from (
 Confidence: 8
 Why: The 2D reshape (B,256,768) -> (B,768,16,16) and back accounts for most of the spatial smoothing overhead. A 1D conv on the token sequence avoids this entirely. Raster-scan order means kernel_size=3 naturally mixes horizontal neighbors. For vertical mixing, we can use dilated 1D conv with dilation=16 (the grid width). This gives us both horizontal and vertical local mixing without any reshape. Should be much faster, potentially recovering the 3.5x throughput loss.
 Time of idea generation: 2026-03-19 06:00
-Status: Not Implemented
+Status: Running
 HPPs:
 Time of run start and end:
 Results vs. Baseline:
@@ -353,3 +353,83 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+---
+idea_id: full_bptt_lr2e4
+Description: Combine full BPTT (backprop through all H_cycles, no gradient truncation) with learning rate 2e-4 (2x the original 1e-4). Full BPTT provides complete gradient information, and the higher LR allows faster convergence within the 1-hour budget. The full gradient signal means the optimizer can make larger, more informed steps.
+Confidence: 10
+Why: Full BPTT alone gave 259.42 (from 314.09). LR 2e-4 with full BPTT gave 230.05. Both are validated. The combination is the current best.
+Time of idea generation: 2026-03-19 08:00
+Status: Success
+HPPs: solver=tbptt, lr=2e-4, full_bptt=true, h_cycles=2, l_cycles=3, spatial_smooth=3x3_depthwise, ema=progressive_0.99_to_0.9999
+Time of run start and end: 2026-03-19 06:00 - 2026-03-19 08:00
+Results vs. Baseline: 230.05 FID vs 259.42 previous best vs 359.63 original baseline. -129.6 total improvement!
+wandb link: full_bptt_lr_2e-4
+Analysis: Full BPTT was the breakthrough — gradient truncation was catastrophically wrong for diffusion. With full gradients, the optimizer can use higher LR (2e-4 vs 1e-4) because it has complete information. The model now gets meaningful gradient signal through ALL recursive cycles. Spatial smooth is still important (no_smooth=284.87 vs with_smooth=230.05). h_cycles=3 (265.47) was worse than h_cycles=2 — more cycles increase compute per step, reducing total steps in the 1-hour budget.
+Conclusion: Full BPTT + higher LR is the dominant configuration. The recursive shared-weight architecture benefits enormously from complete gradient flow.
+Next Ideas to Try: See below.
+---
+
+---
+idea_id: full_bptt_lr3e4
+Description: Push learning rate even higher to 3e-4 with full BPTT. Since 2e-4 improved over 1e-4 with full gradients, 3e-4 may further improve. The risk is instability, but the Huber loss and progressive EMA provide robustness.
+Confidence: 6
+Why: 1e-4→2e-4 gave -29 FID improvement. The relationship between LR and FID may not be linear — there's likely an optimal LR. 3e-4 was tried without full BPTT and was catastrophic (347.17), but full BPTT changes the optimization landscape completely. With full gradient information, higher LR is better supported. However, there's a ceiling — too high will cause divergence.
+Time of idea generation: 2026-03-19 09:00
+Status: Running
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_lr5e4
+Description: Try LR 5e-4 with full BPTT. More aggressive than 3e-4 but tests the upper bound of the LR-FID curve. If this diverges, we know the optimal LR is between 2e-4 and 5e-4.
+Confidence: 4
+Why: Bracketing the optimal LR is important. 2e-4 worked, 3e-4 might work, 5e-4 tests the boundary. The Huber loss provides some robustness against instability.
+Time of idea generation: 2026-03-19 09:00
+Status: Running
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_remove_spatial_smooth
+Description: With full BPTT (which provides complete gradient information through all recursive cycles), the spatial smoothing conv may no longer be needed. Full BPTT lets the attention mechanism learn proper cross-patch relationships through gradient flow. Without spatial smooth, we get ~3.5x more training steps (18000 vs 4700). This is a simplification experiment — if FID is comparable, we get massive speed gains.
+Confidence: 5
+Why: no_smooth with full BPTT got 284.87, which is much better than the old truncated BPTT baseline (314). But still worse than full BPTT with smooth (259.42). However, no_smooth gets 3.5x more steps. The question is whether 3.5x more steps at lower quality-per-step can beat fewer high-quality steps. At LR 2e-4, no_smooth might be competitive since it sees much more data.
+Time of idea generation: 2026-03-19 09:00
+Status: Running
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_no_smooth_lr2e4
+Description: Combine the two: remove spatial smooth AND use LR 2e-4 with full BPTT. If spatial smooth isn't needed with full gradients, this gives us ~18000 steps at 2e-4 LR with full BPTT — the maximum possible training throughput with the strongest optimization signal.
+Confidence: 6
+Why: This tests whether the speed advantage of no spatial smooth (3.5x more steps) compensates for the quality loss. At LR 2e-4 with full BPTT, the model learns much faster per step. 18000 steps of fast learning might beat 4700 steps of slow learning + spatial smoothing. This is the "simplicity win" we should test.
+Time of idea generation: 2026-03-19 09:00
+Status: Running
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

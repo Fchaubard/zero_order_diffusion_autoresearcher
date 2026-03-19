@@ -193,3 +193,14 @@ n/a	316.6504	5.1	discard	pq10 cosine LR schedule
 n/a	259.4170	5.1	keep	pq10 FULL BPTT (no gradient truncation) *** BREAKTHROUGH ***
 n/a	314.2496	5.1	discard	pq10 spatial smooth in float32
 n/a	347.1650	5.1	discard	pq10 LR 3e-4 (too high)
+n/a	284.8732	5.1	discard	pq11 full BPTT + no spatial smooth
+n/a	265.4699	5.1	discard	pq11 full BPTT + h_cycles=3
+n/a	230.0461	5.1	keep	pq11 full BPTT + LR 2e-4 *** NEW BEST ***
+n/a	275.9495	5.1	discard	pq11 full BPTT + random hflip
+n/a	296.7273	5.1	discard	pq11 full BPTT + TTA 3x
+n/a	316.8599	5.1	discard	pq11 full BPTT + cosine LR schedule
+n/a	284.8573	5.1	discard	pq11 full BPTT + weight decay 0.01
+n/a	287.0782	5.1	discard	pq11 full BPTT + no x0 loss
+n/a	216.8371	5.1	keep	pq12 full BPTT + LR 3e-4
+n/a	111.4698	5.1	keep	pq12 full BPTT + LR 5e-4 *** MASSIVE NEW BEST ***
+n/a	250.7261	5.1	discard	pq12 full BPTT + no spatial smooth + LR 2e-4
