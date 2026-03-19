@@ -182,3 +182,6 @@ n/a	334.0851	5.1	discard	pq9 MSE x0_loss weight 0.15
 n/a	346.6512	5.1	discard	pq9 GroupNorm on patch embeddings
 n/a	357.6942	5.1	discard	pq9 class-dependent z_L init
 n/a	365.6916	5.1	discard	pq9 time-dependent z_L init
+n/a	315.0640	5.1	discard	pq10 tta_1x control (no test-time scaling)
+n/a	314.7005	5.1	discard	pq10 tta_3x (diminishing returns)
+n/a	314.4761	5.1	discard	pq10 tta_4x (diminishing returns)
