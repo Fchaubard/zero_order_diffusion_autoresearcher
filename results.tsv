@@ -174,3 +174,11 @@ n/a	315.1265	5.1	discard	pq8 spatial smooth every 3rd call (same speed no benefi
 n/a	316.8249	5.6	discard	pq9 conv1d_neighbor_mixing (h+v 1D convs, same speed worse FID)
 n/a	314.3693	5.1	discard	pq9 smooth_nograd_only (spatial smooth only in truncated cycles)
 n/a	316.8465	5.1	discard	pq9 smooth_grad_cycle_only (spatial smooth only in last cycle)
+n/a	314.0905	5.1	keep	pq9 test-time compute: 2x L-cycles at eval only
+n/a	314.2826	5.1	discard	pq9 skip connection around recursion (0.9/0.1 blend)
+n/a	314.7856	5.1	discard	pq9 spatial gate init -2.0
+n/a	316.5486	5.1	discard	pq9 batch128 (2x steps, half batch)
+n/a	334.0851	5.1	discard	pq9 MSE x0_loss weight 0.15
+n/a	346.6512	5.1	discard	pq9 GroupNorm on patch embeddings
+n/a	357.6942	5.1	discard	pq9 class-dependent z_L init
+n/a	365.6916	5.1	discard	pq9 time-dependent z_L init
