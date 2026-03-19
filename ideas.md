@@ -305,3 +305,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: wide_output_head
+Description: Replace the single Linear output projection with a "shallow yet wide" head: Conv1x1(n_embd -> 4*n_embd) -> GELU -> Conv1x1(4*n_embd -> patch_size^2*3). This gives the output head more capacity to map from latent z_H to pixel-space velocity, without changing the recursive architecture. Inspired by RAE (Representation Autoencoders for DiT, 2025). Current head is just a single Linear(768 -> 48). The wide head would be Linear(768 -> 3072) -> GELU -> Linear(3072 -> 48).
+Confidence: 7
+Why: The output head is a massive bottleneck — it maps from 768-dim latent to 48-dim (4x4x3 patch) with a single linear layer. This is an extreme compression. A wider head with nonlinearity gives the model more expressive power at the output stage, which directly impacts generation quality. The recursion produces good latent features but the output head can't decode them well.
+Time of idea generation: 2026-03-19 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: patch_overlap_embed
+Description: Use overlapping patches for the patch embedding: instead of non-overlapping 4x4 patches (stride=4), use 6x6 patches with stride=4 (2-pixel overlap on each side). This provides local context at each patch boundary, helping the model produce spatially coherent predictions. The Conv2d becomes (3, n_embd, 6, 6, stride=4, padding=1). Output is still 16x16 patches = 256 tokens. This naturally smooths patch boundaries without needing the spatial smoothing conv.
+Confidence: 7
+Why: The blocky patch artifacts we observed are caused by non-overlapping patches with hard boundaries. Overlapping patches naturally share information at boundaries, providing the same spatial mixing that our spatial smoothing conv does but at the input level. This could be faster than the spatial smoothing conv (which runs 8+ times) since it only runs once at input.
+Time of idea generation: 2026-03-19 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
