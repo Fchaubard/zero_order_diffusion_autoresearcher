@@ -138,3 +138,35 @@ n/a	314.3235	5.1	discard	pq4 spatial gate init 1.0 (stronger blending)
 n/a	314.5106	5.1	discard	pq4 spatial smooth + EMA teacher distillation
 n/a	314.8577	5.1	discard	pq4 spatial smooth + progressive recursion
 n/a	0.0000	0.0	crash	pq4 dual spatial smooth (assertion error)
+n/a	357.0142	5.1	discard	pq5 wide output head (768->3072->48)
+n/a	316.6605	5.1	discard	pq5 overlapping patches (6x6 stride 4)
+n/a	314.2854	5.1	keep	pq5 remove noise-adaptive depth (SIMPLIFICATION — same FID!)
+n/a	314.3389	5.1	discard	pq5 remove reverse pass (barely hurts)
+n/a	316.6726	5.1	discard	pq5 sigmoid cosine weight schedule
+n/a	316.7518	5.1	discard	pq5 wide head + overlapping patches combined
+n/a	315.9705	5.1	discard	pq5 remove x0 reconstruction loss
+n/a	357.1159	5.1	discard	pq5 remove cosine loss (catastrophic)
+n/a	316.0325	5.1	discard	pq6 minimal (no reverse pass)
+n/a	401.0080	5.1	discard	pq6 cosine-only loss (catastrophic without Huber)
+n/a	314.9959	5.1	discard	pq6 total variation penalty on velocity
+n/a	314.2383	5.1	keep	pq6 freeze spatial smooth first 20% (CURRICULUM)
+n/a	0.0000	0.0	crash	pq6 channel smoothing (inline module crash)
+n/a	315.6113	5.1	discard	pq6 sine adaptive EMA
+n/a	314.7351	5.1	discard	pq6 post-smooth RMS normalization
+n/a	316.5978	5.1	discard	pq6 velocity magnitude annealing
+n/a	315.0688	5.1	discard	pq7 freeze smooth 30%
+n/a	314.8175	5.1	discard	pq7 freeze smooth 10%
+n/a	315.2140	5.1	discard	pq7 double curriculum (freeze smooth + reverse)
+n/a	314.1328	5.1	keep	pq7 per-channel spatial gate (768 learnable blend factors)
+n/a	314.9470	5.1	discard	pq7 extra smooth after reverse pass
+n/a	360.6088	5.1	discard	pq7 cosine weight 0.3 (CATASTROPHIC)
+n/a	316.8393	5.1	discard	pq7 cosine weight 0.7
+n/a	316.0468	5.1	discard	pq7 x0 loss weight 0.2
+n/a	314.6874	5.1	discard	pq8 per-channel gate + freeze 30%
+n/a	314.1610	5.1	discard	pq8 baseline verify (reproducibility check)
+n/a	314.6866	5.1	discard	pq8 stochastic spatial smooth (50% skip)
+n/a	316.4710	5.1	discard	pq8 Laplacian kernel init for spatial smooth
+n/a	314.6424	5.1	discard	pq8 bilinear unpatch smoothing at eval
+n/a	0.0000	0.0	crash	pq8 fast smooth LR 3x (optimizer assertion)
+n/a	315.8110	5.1	discard	pq8 EMA 0.995->0.9999
+n/a	314.8925	5.1	discard	pq8 x0 loss late curriculum (after 50%)
