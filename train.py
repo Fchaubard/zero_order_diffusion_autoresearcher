@@ -1098,6 +1098,11 @@ while True:
             group["lr"] = group["initial_lr"] * lrm
         optimizer.step()
         model.zero_grad(set_to_none=True)
+        # Freeze spatial smooth conv for first 20% (let main model stabilize first)
+        if progress < 0.2:
+            with torch.no_grad():
+                model.spatial_smooth.weight.zero_()
+                model.spatial_gate.fill_(0.0)
         # Progressive EMA: decay increases from 0.99 to 0.9999 over training
         current_decay = 0.99 + progress * 0.0099  # 0.99 -> 0.9999
         with torch.no_grad():
