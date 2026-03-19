@@ -172,3 +172,5 @@ n/a	315.8110	5.1	discard	pq8 EMA 0.995->0.9999
 n/a	314.8925	5.1	discard	pq8 x0 loss late curriculum (after 50%)
 n/a	315.1265	5.1	discard	pq8 spatial smooth every 3rd call (same speed no benefit)
 n/a	316.8249	5.6	discard	pq9 conv1d_neighbor_mixing (h+v 1D convs, same speed worse FID)
+n/a	314.3693	5.1	discard	pq9 smooth_nograd_only (spatial smooth only in truncated cycles)
+n/a	316.8465	5.1	discard	pq9 smooth_grad_cycle_only (spatial smooth only in last cycle)
