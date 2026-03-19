@@ -433,3 +433,51 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: full_bptt_lr8e4
+Description: Fine-tune the LR between 7e-4 (FID 95.87) and 1e-3 (FID 97.90). Try 8e-4 to find the exact optimal. The LR curve shows 7e-4 is slightly better than 1e-3, suggesting the peak is near 7e-4 but could be 8e-4 or 9e-4.
+Confidence: 7
+Why: We have a clear LR→FID curve: 5e-4=111.5, 7e-4=95.9, 1e-3=97.9, 2e-3=268 (diverged). The peak appears near 7e-4 but could be slightly higher. 8e-4 splits the difference. High confidence because we know the range works.
+Time of idea generation: 2026-03-19 14:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_lr7e4_no_freeze_smooth
+Description: At LR 7e-4 with full BPTT, test whether the "freeze spatial smooth for first 20%" curriculum is still optimal. With the much higher LR, the model converges faster and the smooth may need to activate sooner or later. Try without the freeze (smooth active from step 0).
+Confidence: 5
+Why: The freeze curriculum was optimized at LR 1e-4. At 7x the LR, training dynamics are completely different. The model reaches the equivalent of "20% progress" much faster in terms of feature quality. The smooth might benefit from being active earlier. Conversely, at high LR the early training is noisier and smoothing early might help stabilize it.
+Time of idea generation: 2026-03-19 14:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_lr7e4_weight_decay_001
+Description: Add weight decay 0.01 at LR 7e-4 with full BPTT. High LR benefits from regularization to prevent overfitting. Weight decay was tested before at lower LRs and was neutral/slightly helpful.
+Confidence: 5
+Why: At LR 7e-4, the model updates are 7x larger than the original 1e-4. This increases risk of overfitting or noisy weights. Weight decay provides a regularizing force that may improve generalization (FID) even if training loss is slightly higher.
+Time of idea generation: 2026-03-19 14:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

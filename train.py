@@ -67,7 +67,7 @@ train_group.add_argument("--total-batch-size", type=int, default=256,
     help="Total images per optimizer step")
 train_group.add_argument("--device-batch-size", type=int, default=64,
     help="Per-device batch size (reduce if OOM)")
-train_group.add_argument("--lr", type=float, default=7e-4,
+train_group.add_argument("--lr", type=float, default=9e-4,
     help="Learning rate")
 train_group.add_argument("--weight-decay", type=float, default=0.0,
     help="Weight decay for transformer parameters (TBPTT AdamW)")

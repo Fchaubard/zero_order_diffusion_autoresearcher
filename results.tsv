@@ -207,3 +207,11 @@ n/a	250.7261	5.1	discard	pq12 full BPTT + no spatial smooth + LR 2e-4
 n/a	95.8681	5.1	keep	pq13 full BPTT + LR 7e-4 *** NEW BEST 95.87 ***
 n/a	97.9047	5.1	keep	pq13 full BPTT + LR 1e-3
 n/a	268.0763	5.1	discard	pq13 full BPTT + LR 2e-3 (diverged)
+n/a	110.5561	9.5	discard	pq14 full BPTT LR 8e-4
+n/a	128.3887	9.5	discard	pq14 full BPTT LR 7e-4 no freeze smooth
+n/a	94.0363	9.5	keep	pq14 full BPTT LR 7e-4 + weight decay 0.01
+n/a	92.7435	9.5	keep	pq14 full BPTT LR 9e-4 *** NEW BEST ***
+n/a	232.9355	9.5	discard	pq14 full BPTT LR 6e-4
+n/a	97.8869	9.5	discard	pq14 full BPTT LR 7e-4 + hflip augmentation
+n/a	287.6801	9.5	discard	pq14 full BPTT LR 7e-4 + TTA 2x (broken)
+n/a	259.9749	9.5	discard	pq14 full BPTT LR 1.5e-3 (too high)
