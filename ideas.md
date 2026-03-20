@@ -705,3 +705,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: multi_scale_patch_2_4
+Description: Use TWO patch sizes simultaneously: patch_size=4 (16x16=256 tokens, current) AND patch_size=8 (8x8=64 tokens, coarse). Process the coarse patches first with the shared L-level block, then upsample and add as conditioning to the fine patch processing. This gives the model a multi-resolution view without the cost of patch_size=2 (which used 33GB VRAM). The coarse path is cheap (64 tokens) and provides global structure that guides fine detail generation. Implementation: add a second PatchEmbed with kernel=8, process coarse tokens through l_level once, bilinear upsample to 16x16, add to z_H before fine processing.
+Confidence: 5
+Why: Multi-scale processing is fundamental in vision (U-Net, FPN, etc). Our model processes at a single scale (4x4 patches). Coarse-to-fine is how humans perceive images. The coarse pass adds ~10% compute (64 tokens vs 256) but provides global context. patch_size=2 was too expensive (33GB), but patch_size=8 is cheap (64 tokens, 4x less attention compute than current). Risk: the shared block weights may not generalize well across scales.
+Time of idea generation: 2026-03-21 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: inject_noise_level_to_recursion
+Description: Currently the model gets the timestep t via AdaLN conditioning on the transformer blocks. But the RECURSION STRUCTURE doesn't know about t — it always does the same number of cycles regardless of noise level. What if we inject t directly into the recursive loop? At high noise (t near 0), the model should do more refinement. At low noise (t near 1, almost clean), less refinement is needed. Implementation: at each L-cycle, multiply the input injection by (1 + (1-t)), so noisy inputs get 2x injection strength while clean inputs get 1x. This is like a noise-conditioned recursion depth without actually changing the number of cycles.
+Confidence: 4
+Why: The model currently treats all timesteps equally in terms of recursion computation. But denoising from heavy noise requires more iterative refinement than polishing an almost-clean image. By scaling the injection strength by noise level, we give the model adaptive processing depth without changing the architecture. The AdaLN already provides timestep conditioning to the blocks, but the INJECTION PATHWAY doesn't know about t. Risk: might destabilize the recursive dynamics.
+Time of idea generation: 2026-03-21 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

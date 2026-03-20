@@ -351,3 +351,11 @@ n/a	62.5068	8.8	discard	b31 LR 2e-3 seed=7
 n/a	62.5098	8.8	discard	b31 LR 2.5e-3 (slightly worse)
 n/a	59.8074	8.8	discard	b31 LR 2e-3 no hflip
 n/a	62.4391	6.7	discard	b31 LR 2e-3 no reverse
+n/a	0.0000	0.0	crash	b32 multi-scale coarse-to-fine (variable B undefined)
+n/a	65.6514	8.8	discard	b32 noise-level injection scaling (worse)
+n/a	61.0034	8.8	discard	b32 seed=2024 variance
+n/a	62.7392	8.8	discard	b32 seed=314 variance
+n/a	61.9327	8.8	discard	b32 seed=555 variance
+n/a	60.6859	8.8	discard	b32 seed=777 variance
+n/a	59.8312	8.8	discard	b32 seed=1000 variance
+n/a	61.8113	8.8	discard	b32 seed=9999 variance
