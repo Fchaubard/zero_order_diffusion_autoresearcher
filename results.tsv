@@ -343,3 +343,11 @@ n/a	60.2025	8.8	discard	b30 L1+cos1 seed99
 n/a	62.6386	8.8	discard	b30 L1+cos2.0 beta95 (too much cosine)
 n/a	60.8436	8.8	discard	b30 L1+cos1 LR1.8e-3 beta95
 n/a	58.8225	8.8	keep	b30 L1+cos1 LR2e-3 beta95 *** NEW BEST 58.82 ***
+n/a	335.8440	8.8	discard	b31 velocity decomposition loss (diverged)
+n/a	63.3107	33.1	discard	b31 accum=1 devbatch=256
+n/a	59.2109	8.8	discard	b31 LR 2e-3 seed=0
+n/a	61.7652	8.8	discard	b31 LR 2e-3 seed=1
+n/a	62.5068	8.8	discard	b31 LR 2e-3 seed=7
+n/a	62.5098	8.8	discard	b31 LR 2.5e-3 (slightly worse)
+n/a	59.8074	8.8	discard	b31 LR 2e-3 no hflip
+n/a	62.4391	6.7	discard	b31 LR 2e-3 no reverse

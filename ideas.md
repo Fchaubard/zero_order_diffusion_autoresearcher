@@ -673,3 +673,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: velocity_norm_loss
+Description: Replace L1+cosine with a single loss that combines both: L1 on the unit-normalized velocity (direction) + L1 on the scalar magnitude. This is mathematically cleaner than L1+cosine because it explicitly decomposes the velocity into direction and magnitude components. loss = L1(pred/|pred|, vel/|vel|) + 0.1*L1(|pred|, |vel|). The direction component gets most weight since FID cares more about direction (confirmed by cosine loss importance).
+Confidence: 5
+Why: The current L1+cosine loss has redundant components — L1 already captures direction implicitly. By explicitly decomposing into direction and magnitude, we can control the balance more precisely. The 10:1 ratio favoring direction matches our finding that cosine (direction) is more important than magnitude. Novel loss formulation not found in literature.
+Time of idea generation: 2026-03-20 22:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: gradient_accumulation_1_devbatch256
+Description: Remove gradient accumulation entirely: device_batch=256, total_batch=256, accum=1. Currently we use device_batch=64, accum=4. With accum=1, we do 1 forward+backward per optimizer step instead of 4. This means the optimizer updates more frequently with noisier gradients. At high LR with beta2=0.95, noisier but more frequent updates might be better — similar to how SGD with small batch can outperform large batch in some regimes.
+Confidence: 5
+Why: At LR 2e-3 with beta2=0.95, the optimizer already handles noisy gradients well. More frequent updates (4x more per hour) means the model sees more optimization steps. The tradeoff is noisier gradients, but beta2=0.95 adapts fast. This also increases VRAM usage (256 images at once instead of 64) which utilizes the A100 better.
+Time of idea generation: 2026-03-20 22:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
