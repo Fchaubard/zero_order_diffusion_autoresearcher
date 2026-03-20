@@ -67,7 +67,7 @@ train_group.add_argument("--total-batch-size", type=int, default=256,
     help="Total images per optimizer step")
 train_group.add_argument("--device-batch-size", type=int, default=64,
     help="Per-device batch size (reduce if OOM)")
-train_group.add_argument("--lr", type=float, default=9e-4,
+train_group.add_argument("--lr", type=float, default=1.5e-3,
     help="Learning rate")
 train_group.add_argument("--weight-decay", type=float, default=0.0,
     help="Weight decay for transformer parameters (TBPTT AdamW)")
@@ -306,16 +306,10 @@ class RecursiveDiT(nn.Module):
         return x
 
     def l_level(self, x, input_injection, c):
-        """Apply shared L-level blocks with input injection + spatial smoothing."""
+        """Apply shared L-level blocks with input injection."""
         x = x + input_injection
         for block in self.l_blocks:
             x = block(x, c)
-        # Spatial smoothing: local patch blending via 3x3 depthwise conv
-        B, N, C = x.shape
-        g = self._patch_grid
-        x_2d = x.transpose(1, 2).reshape(B, C, g, g)
-        x_smooth = self.spatial_smooth(x_2d).reshape(B, C, N).transpose(1, 2)
-        x = x + torch.sigmoid(self.spatial_gate).unsqueeze(0).unsqueeze(0) * x_smooth
         return x
 
     @torch.no_grad()
@@ -1101,11 +1095,7 @@ while True:
             group["lr"] = group["initial_lr"] * lrm
         optimizer.step()
         model.zero_grad(set_to_none=True)
-        # Freeze spatial smooth conv for first 20% (let main model stabilize first)
-        if progress < 0.2:
-            with torch.no_grad():
-                model.spatial_smooth.weight.zero_()
-                model.spatial_gate.zero_()
+        # (spatial smooth removed — speed wins at higher LR)
         # Progressive EMA: decay increases from 0.99 to 0.9999 over training
         current_decay = 0.99 + progress * 0.0099  # 0.99 -> 0.9999
         with torch.no_grad():

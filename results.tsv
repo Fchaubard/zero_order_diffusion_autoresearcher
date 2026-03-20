@@ -247,3 +247,11 @@ n/a	104.8617	9.5	discard	b18 EMA starting at 0.98
 n/a	96.1152	9.5	discard	b18 cosine weight 0.75
 n/a	95.6181	9.5	discard	b18 hflip + WD 0.02 + LR 8.5e-4
 n/a	83.7603	9.5	discard	b18 hflip without x0 loss (simplification)
+n/a	0.0000	0.0	crash	b19 smooth last H only (crash)
+n/a	316.1447	9.5	discard	b19 no smooth + LR 1.2e-3 (diverged)
+n/a	75.4043	9.5	keep	b19 no smooth + LR 1.5e-3 *** NEW BEST 75.40 ***
+n/a	88.3099	9.5	discard	b19 head_dim=128
+n/a	314.0042	11.8	discard	b19 l_cycles=4 (too slow)
+n/a	91.8671	9.5	discard	b19 smooth every 2nd call
+n/a	296.7256	9.5	discard	b19 gradient penalty on velocity (diverged)
+n/a	80.1372	9.5	keep	b19 EMA teacher distillation 0.05
