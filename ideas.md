@@ -737,3 +737,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: learned_timestep_weighting
+Description: Instead of uniform timestep sampling t~U[0,1], learn which timesteps matter most for FID. Use a simple heuristic: weight timesteps by their loss magnitude. At each step, compute per-sample loss, then for the next batch, sample t proportional to the running average loss at each t. This focuses training on the timesteps the model struggles with most. Implementation: maintain a 100-bin histogram of average loss per t-bin, sample t from this distribution (softmax-normalized). Update the histogram with EMA.
+Confidence: 5
+Why: Uniform t sampling wastes compute on easy timesteps. FID is determined by the quality of the full ODE trajectory — if certain timesteps have high loss, those are the bottleneck. Importance sampling of t based on loss is a principled way to allocate training compute. This is related to P2 weighting (Choi et al. 2022) but learned adaptively rather than fixed. Risk: the loss landscape changes during training, so the weighting needs to adapt.
+Time of idea generation: 2026-03-21 04:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: residual_z_H_accumulation
+Description: Instead of overwriting z_H at each H_cycle boundary (z_H = l_level(z_H, z_L, c)), use a residual connection: z_H = z_H + alpha * l_level(z_H, z_L, c) where alpha is a learnable scalar initialized at 0.1. This prevents catastrophic overwriting of z_H's accumulated information and allows each H_cycle to make incremental corrections. Similar to how ResNets learn residual corrections rather than full mappings.
+Confidence: 5
+Why: Currently z_H is fully replaced at each H_cycle. With full BPTT, the gradient flows through these replacements, but the signal may still be lossy. A residual connection preserves information from earlier cycles while allowing refinement. The learnable alpha controls the step size of each refinement. This is a fundamental architectural change that makes the recursion more like an ODE (continuous refinement) rather than a sequence of discrete rewrites. Risk: the model might not converge if alpha is too large.
+Time of idea generation: 2026-03-21 04:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
