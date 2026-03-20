@@ -271,3 +271,11 @@ n/a	335.0764	8.9	discard	b21 LR 1.5e-3 no cosine loss (CATASTROPHIC)
 n/a	103.3868	6.8	discard	b21 LR 1.5e-3 no reverse pass no smooth
 n/a	292.0871	8.9	discard	b21 LR 1.5e-3 cos=0.3 (diverged)
 n/a	290.0574	8.9	discard	b21 LR 1.5e-3 x0=0.2 (diverged)
+n/a	106.6875	33.1	discard	b22 patch_size=2 (1024 patches, too slow)
+n/a	125.4016	6.8	discard	b22 flat recursion no z_L
+n/a	76.1511	16.7	discard	b22 l_layers=2 (two transformer blocks)
+n/a	94.7192	8.1	discard	b22 GELU MLP instead of SwiGLU
+n/a	92.8727	8.9	discard	b22 dense injection (input_emb in z_H update too)
+n/a	135.5794	6.1	discard	b22 h_cycles=1 (too simple)
+n/a	118.9091	8.9	discard	b22 fixed EMA 0.999 (progressive is better)
+n/a	93.1236	8.9	discard	b22 REPRODUCE baseline (variance check: 93.1 vs 75.4!)
