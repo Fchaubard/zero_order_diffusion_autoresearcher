@@ -641,3 +641,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: l1_cos1_lr17e3_b95
+Description: Combine the three best findings: L1 loss, cosine weight 1.0, LR 1.7e-3, beta2=0.95. LR 1.7e-3 scored 61.1 with cos=0.5, and cos=1.0 scored 59.6 at LR 1.5e-3. Combining both should give the best result. This is a principled combination of validated improvements.
+Confidence: 7
+Why: Each component is independently validated. cos=1.0 gave -2.4 FID. LR 1.7e-3 gave -0.8 FID. If additive, expect ~57 FID. These should stack because they affect different aspects: LR controls convergence speed, cosine weight controls loss balance.
+Time of idea generation: 2026-03-20 20:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: l1_cos15_b95
+Description: Try cosine weight 1.5 (even higher than 1.0). If cos=1.0 beat cos=0.5, maybe cos=1.5 is even better. The cosine term encourages directional alignment which is critical for ODE sampling quality. More weight = more directional pressure.
+Confidence: 5
+Why: cos=0.5→1.0 gave -2.4 FID. The trend might continue. However, there's a point where too much cosine pressure hurts magnitude prediction. L1 already provides magnitude gradient, so the optimal balance might favor higher cosine weight. Risk: cos too high could make the model ignore magnitude entirely.
+Time of idea generation: 2026-03-20 20:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
