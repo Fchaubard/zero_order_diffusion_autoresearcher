@@ -1076,7 +1076,7 @@ while True:
                 if torch.rand(1).item() < 0.5:
                     x_t = x_t.flip(3); velocity = velocity.flip(3); x = x.flip(3)
                 pred = model(x_t, t, class_labels=y)
-                huber = F.smooth_l1_loss(pred, velocity)
+                huber = F.l1_loss(pred, velocity)
                 cos = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
                 loss = huber + 0.5 * cos
             train_loss = huber.detach()

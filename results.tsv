@@ -319,3 +319,11 @@ n/a	88.3657	16.9	discard	b27 device_batch=128
 n/a	66.2238	8.9	keep	b27 beta2=0.95 (TRM setting) *** NEW BEST 66.22 ***
 n/a	118.4911	8.9	discard	b27 constant LR (no warmdown)
 n/a	93.6925	8.9	discard	b27 warmdown 50%
+n/a	68.7645	8.9	discard	b28 beta2=0.95 seed=0
+n/a	69.0838	8.9	discard	b28 beta2=0.95 seed=1
+n/a	68.2759	8.9	discard	b28 beta2=0.95 seed=7
+n/a	69.4779	8.9	discard	b28 beta2=0.95 seed=99
+n/a	61.8965	8.8	keep	b28 L1+cos beta2=0.95 *** NEW BEST 61.90 ***
+n/a	68.6561	8.9	discard	b28 beta2=0.90
+n/a	67.3294	8.9	discard	b28 beta2=0.95 LR 1.4e-3
+n/a	65.7291	8.9	keep	b28 beta2=0.95 LR 1.7e-3
