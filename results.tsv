@@ -295,3 +295,11 @@ n/a	94.4232	8.9	discard	b24 ema seed=0 (EMA hurts at high LR!)
 n/a	98.9688	8.9	discard	b24 ema seed=1 (EMA hurts at high LR!)
 n/a	296.8676	8.9	discard	b24 no_ema lr=2e-3 (diverged)
 n/a	97.0782	8.9	discard	b24 no_ema lr=1e-3
+n/a	293.5813	8.9	discard	b25 noema LR 1.7e-3 (diverged)
+n/a	79.0250	8.9	keep	b25 noema LR 1.3e-3
+n/a	94.8181	8.9	discard	b25 noema LR 2e-3 seed=1
+n/a	100.5539	8.9	discard	b25 noema WD 0.01
+n/a	87.1796	8.9	discard	b25 noema cos=0.7
+n/a	86.3455	8.9	discard	b25 noema hflip seed=1
+n/a	87.0595	6.8	discard	b25 noema no reverse pass
+n/a	75.5852	8.9	keep	b25 noema no x0 loss (SIMPLIFICATION: same FID!)
