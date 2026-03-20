@@ -435,6 +435,10 @@ spsa_group.add_argument("--diversity-weight", type=float, default=0.0,
 spsa_group.add_argument("--ce-temperature", type=float, default=1.0,
     help="Temperature for CE logits. T>1 gives softer CE loss (smoother gradient landscape for SPSA). "
          "T<1 gives sharper CE. Default 1.0 (standard CE).")
+spsa_group.add_argument("--ce-subsample", type=int, default=0,
+    help="Subsample N images for InceptionV3 classification in autoreg_ce. 0=all images (default). "
+         "E.g., 250 = classify 250 of 1000 images, ~4x faster steps but noisier CE. "
+         "Same subset used for both +/- perturbations (deterministic seed).")
 spsa_group.add_argument("--progressive-ce-weight", type=float, default=0.5,
     help="Weight for intermediate CE in autoreg_progressive_ce. Final step CE weight is always 1.0. "
          "Default 0.5 = intermediate CE counts half as much as final.")
@@ -4155,13 +4159,23 @@ if args.solver == "spsa":
                     velocity = model(x_gen, t_tensor, class_labels=y_b)
                     x_gen = x_gen + velocity * dt
                 clf_model, clf_transform = spsa_classifier[0]
-                x_clf = clf_transform(x_gen.float().clamp(0, 1))
-                with torch.no_grad():
+                # Subsample for faster InceptionV3 if requested
+                ce_sub = getattr(args, 'ce_subsample', 0)
+                if ce_sub > 0 and x_gen.shape[0] > ce_sub:
+                    sub_gen = torch.Generator(device=dev)
+                    sub_gen.manual_seed(noise_seed[0] + batch_idx + 999)
+                    perm = torch.randperm(x_gen.shape[0], generator=sub_gen, device=dev)[:ce_sub]
+                    x_clf = clf_transform(x_gen[perm].float().clamp(0, 1))
+                    y_sub = y_b[perm]
+                else:
+                    x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                    y_sub = y_b
+                with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
                     logits = clf_model(x_clf)
                 ce_temp = getattr(args, 'ce_temperature', 1.0)
                 if ce_temp != 1.0:
                     logits = logits / ce_temp
-                ce_loss = F.cross_entropy(logits, y_b).item()
+                ce_loss = F.cross_entropy(logits.float(), y_sub).item()
                 return ce_loss
             elif loss_type == "autoreg_progressive_ce":
                 # Progressive CE: classify at EVERY ODE step, not just the endpoint.
