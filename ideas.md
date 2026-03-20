@@ -593,3 +593,51 @@ Analysis: beta2=0.95 from TRM was the key missing ingredient. The recursive arch
 Conclusion: beta2=0.95 is optimal for recursive shared-weight architectures. This is a transferable insight from TRM.
 Next Ideas to Try: Explore beta2 between 0.9-0.99 to find exact optimum. Also try beta1=0.95 (TRM uses this too).
 ---
+
+---
+idea_id: l1_cos_beta95_lr17e3
+Description: Combine the three recent wins: L1 loss (replaced Huber, FID 61.9 vs 66.2), beta2=0.95 (from TRM), and LR 1.7e-3 (which scored 65.7 with Huber). The hypothesis is that L1's improved gradient signal allows the model to tolerate even higher LR with beta2=0.95. L1 provides constant gradient magnitude regardless of error size, which may interact well with beta2=0.95's fast second-moment adaptation.
+Confidence: 7
+Why: L1 gave -4.3 FID over Huber. LR 1.7e-3 gave -0.5 FID over 1.5e-3 with Huber. These are independent improvements that should stack. L1's uniform gradient magnitude means the optimizer's second moment estimate (controlled by beta2) is more predictable, potentially allowing even higher LR. All three components are validated independently.
+Time of idea generation: 2026-03-20 16:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: l1_cos_beta95_beta1_095
+Description: TRM uses both beta1=0.95 and beta2=0.95 in its optimizer. We only changed beta2. Try beta1=0.95 too (from default 0.9). Higher beta1 means less momentum — the optimizer responds faster to gradient direction changes, which may help with the recursive architecture's non-stationary gradients.
+Confidence: 6
+Why: If beta2=0.95 helped because recursive architectures have non-stationary gradient statistics, then beta1=0.95 should help for the same reason. The first moment estimate (momentum) also benefits from faster adaptation when gradients change direction across recursion cycles. TRM uses this setting for good reason.
+Time of idea generation: 2026-03-20 16:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: l1_only_no_cosine
+Description: Test if cosine loss is still needed with L1. L1 already encourages both direction and magnitude matching (unlike MSE which overweights large errors). The cosine term was critical with Huber/MSE, but L1 may subsume its benefit. Removing cosine simplifies the loss to just L1.
+Confidence: 5
+Why: L1 loss applies equal gradient pressure to all dimensions of the velocity vector, which naturally encourages directional alignment. Cosine was added to compensate for MSE/Huber's tendency to focus on large-error dimensions at the expense of directional accuracy. With L1, this compensation may be unnecessary. If confirmed, this is a major simplification.
+Time of idea generation: 2026-03-20 16:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

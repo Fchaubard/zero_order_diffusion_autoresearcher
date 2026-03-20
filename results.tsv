@@ -327,3 +327,11 @@ n/a	61.8965	8.8	keep	b28 L1+cos beta2=0.95 *** NEW BEST 61.90 ***
 n/a	68.6561	8.9	discard	b28 beta2=0.90
 n/a	67.3294	8.9	discard	b28 beta2=0.95 LR 1.4e-3
 n/a	65.7291	8.9	keep	b28 beta2=0.95 LR 1.7e-3
+n/a	61.0952	8.8	keep	b29 L1+cos beta95 LR 1.7e-3
+n/a	63.7451	8.8	discard	b29 L1+cos beta1=0.95 beta2=0.95
+n/a	66.7375	8.9	discard	b29 L1 only no cosine (cosine still needed)
+n/a	59.3868	8.8	keep	b29 L1+cos beta95 seed=0 *** NEW BEST SEED 59.39 ***
+n/a	61.2546	8.8	discard	b29 L1+cos beta95 seed=1
+n/a	61.4193	8.8	discard	b29 L1+cos beta95 seed=7
+n/a	63.6447	8.8	discard	b29 L1+cos beta95 LR1.7+beta1=0.95
+n/a	59.5508	8.8	keep	b29 L1+cos=1.0 beta95 (higher cosine weight!)
