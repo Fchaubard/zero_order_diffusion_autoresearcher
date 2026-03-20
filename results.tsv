@@ -279,3 +279,11 @@ n/a	92.8727	8.9	discard	b22 dense injection (input_emb in z_H update too)
 n/a	135.5794	6.1	discard	b22 h_cycles=1 (too simple)
 n/a	118.9091	8.9	discard	b22 fixed EMA 0.999 (progressive is better)
 n/a	93.1236	8.9	discard	b22 REPRODUCE baseline (variance check: 93.1 vs 75.4!)
+n/a	94.9782	8.9	discard	b23 seed=0 variance check
+n/a	93.6392	8.9	discard	b23 seed=1 variance check
+n/a	97.8272	8.9	discard	b23 seed=123 variance check
+n/a	294.1304	16.7	discard	b23 l_layers=2 lr=1e-3 (diverged)
+n/a	79.9623	8.9	keep	b23 NO EMA - raw model eval (EMA may hurt at high LR!)
+n/a	88.8163	8.9	discard	b23 seed=7 variance check
+n/a	93.2393	8.9	discard	b23 seed=99 variance check
+n/a	86.5477	8.9	discard	b23 seed=2024 variance check
