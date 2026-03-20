@@ -231,3 +231,11 @@ n/a	89.0288	9.5	discard	b16 WD 0.02 no hflip
 n/a	94.4024	9.5	discard	b16 hflip + WD 0.02 + LR 8e-4
 n/a	104.9781	9.5	discard	b16 hflip + vflip
 n/a	311.4900	9.5	discard	b16 hflip + WD 0.003 (diverged)
+n/a	156.3646	9.5	discard	b17 batch 512
+n/a	93.3726	7.2	discard	b17 no reverse pass
+n/a	314.7318	9.5	discard	b17 color jitter (CATASTROPHIC)
+n/a	85.2487	9.5	discard	b17 remove x0 loss (simplification test)
+n/a	103.3446	9.5	discard	b17 remove spatial smooth (still needed)
+n/a	97.5929	9.5	discard	b17 cosine weight 1.0
+n/a	93.6064	9.5	discard	b17 WD 0.01 no freeze smooth
+n/a	319.5215	12.5	discard	b17 h_cycles=3 full BPTT (too slow)

@@ -481,3 +481,51 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: full_bptt_larger_batch_512
+Description: With full BPTT at LR 9e-4, try batch size 512 (grad_accum=8 instead of 4). Larger batch gives more stable gradients which may allow the model to converge better. At the current ~800ms/step, 4700 steps * 512 images = 2.4M images seen. Previous attempt at batch 512 without full BPTT was worse, but full BPTT changes everything.
+Confidence: 5
+Why: Larger batches reduce gradient noise. With full BPTT + high LR, the gradients are already high-quality but could be noisy. Batch 512 smooths this. The tradeoff is fewer optimizer steps (2350 vs 4700), but each step is more informative. Many diffusion models train with large batches (256-1024).
+Time of idea generation: 2026-03-19 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_remove_reverse_pass
+Description: Test if the symmetric reverse pass is still needed with full BPTT. Without truncation, the forward L-cycles already get full gradient signal. The reverse pass doubles the L-level calls in the last H_cycle. Removing it would speed up each step.
+Confidence: 5
+Why: The reverse pass was added when we had truncated BPTT and needed extra refinement. With full gradients, the model learns better representations in the forward pass. Removing the reverse pass saves compute and may not hurt FID. This is a simplification experiment.
+Time of idea generation: 2026-03-19 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_color_jitter
+Description: Add random color jitter augmentation (brightness, contrast, saturation) during training. This is orthogonal to hflip and provides more data diversity. Standard augmentation for vision models.
+Confidence: 5
+Why: Hflip gave -10 FID. Color jitter is another standard augmentation that's orthogonal (spatial vs color). ImageNet has diverse lighting conditions, and jitter forces the model to be robust to color variations. Simple to implement with torchvision transforms.
+Time of idea generation: 2026-03-19 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
