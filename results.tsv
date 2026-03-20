@@ -303,3 +303,11 @@ n/a	87.1796	8.9	discard	b25 noema cos=0.7
 n/a	86.3455	8.9	discard	b25 noema hflip seed=1
 n/a	87.0595	6.8	discard	b25 noema no reverse pass
 n/a	75.5852	8.9	keep	b25 noema no x0 loss (SIMPLIFICATION: same FID!)
+n/a	89.5151	8.9	discard	b26 simplified config seed=0
+n/a	87.6711	8.9	discard	b26 simplified config seed=1
+n/a	87.3162	8.9	discard	b26 simplified config seed=7
+n/a	83.5460	8.9	discard	b26 simplified config seed=99
+n/a	84.4909	8.9	discard	b26 simplified LR 1.4e-3
+n/a	87.9305	8.9	discard	b26 simplified LR 1.6e-3
+n/a	87.7795	8.9	discard	b26 simplified cos=1.0
+n/a	82.3212	8.9	discard	b26 simplified MSE instead of Huber
