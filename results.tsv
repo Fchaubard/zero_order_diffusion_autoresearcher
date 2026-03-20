@@ -311,3 +311,11 @@ n/a	84.4909	8.9	discard	b26 simplified LR 1.4e-3
 n/a	87.9305	8.9	discard	b26 simplified LR 1.6e-3
 n/a	87.7795	8.9	discard	b26 simplified cos=1.0
 n/a	82.3212	8.9	discard	b26 simplified MSE instead of Huber
+n/a	91.4497	8.9	discard	b27 eval with 100 ODE steps
+n/a	94.7005	8.9	discard	b27 MSE+cos seed=1
+n/a	503.7984	8.9	discard	b27 cosine-only + magnitude (diverged)
+n/a	74.8846	8.8	keep	b27 L1+cos (L1 slightly better than Huber)
+n/a	88.3657	16.9	discard	b27 device_batch=128
+n/a	66.2238	8.9	keep	b27 beta2=0.95 (TRM setting) *** NEW BEST 66.22 ***
+n/a	118.4911	8.9	discard	b27 constant LR (no warmdown)
+n/a	93.6925	8.9	discard	b27 warmdown 50%

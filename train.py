@@ -94,7 +94,7 @@ train_group.add_argument("--num-workers", type=int, default=4,
 bp_group = parser.add_argument_group("tbptt-specific")
 bp_group.add_argument("--adam-beta1", type=float, default=0.9,
     help="Adam beta1")
-bp_group.add_argument("--adam-beta2", type=float, default=0.999,
+bp_group.add_argument("--adam-beta2", type=float, default=0.95,
     help="Adam beta2")
 
 # SPSA-specific
