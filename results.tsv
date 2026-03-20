@@ -263,3 +263,11 @@ n/a	96.6053	8.9	discard	b20 LR 1.5e-3 + WD 0.01 no smooth
 n/a	94.4226	8.9	discard	b20 LR 1.5e-3 + EMA distill no smooth
 n/a	317.9614	8.9	discard	b20 LR 1.5e-3 + hflip no smooth (CATASTROPHIC)
 n/a	101.1519	8.9	discard	b20 LR 1.5e-3 + TTA 3x no smooth
+n/a	95.7389	8.9	discard	b21 LR 1.4e-3 no smooth
+n/a	289.3583	8.9	discard	b21 LR 1.6e-3 no smooth (diverged)
+n/a	89.1269	8.9	discard	b21 LR 1.5e-3 WD 0.005 no smooth
+n/a	82.2163	8.9	discard	b21 LR 1.5e-3 no x0 loss no smooth
+n/a	335.0764	8.9	discard	b21 LR 1.5e-3 no cosine loss (CATASTROPHIC)
+n/a	103.3868	6.8	discard	b21 LR 1.5e-3 no reverse pass no smooth
+n/a	292.0871	8.9	discard	b21 LR 1.5e-3 cos=0.3 (diverged)
+n/a	290.0574	8.9	discard	b21 LR 1.5e-3 x0=0.2 (diverged)
