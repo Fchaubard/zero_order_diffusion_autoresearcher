@@ -167,7 +167,7 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "denoising_gauss_legendre", "denoising_cosine_progressive",
              "gl_diversity", "gl_spectral", "diversity_mse", "gl_class_diversity",
              "class_ce", "gl_class_ce",
-             "autoreg_mse_ce", "autoreg_ce",
+             "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce",
              "autoreg_endpoint_ce", "autoreg_corrective_ce"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
@@ -432,6 +432,12 @@ spsa_group.add_argument("--ssim-weight", type=float, default=0.0,
 spsa_group.add_argument("--diversity-weight", type=float, default=0.0,
     help="Anti-mean-prediction: penalize low diversity in velocity predictions across the batch. "
          "Adds -weight * std(velocity) to GL loss. Mean predictor outputs identical velocities → 0 std → high penalty.")
+spsa_group.add_argument("--ce-temperature", type=float, default=1.0,
+    help="Temperature for CE logits. T>1 gives softer CE loss (smoother gradient landscape for SPSA). "
+         "T<1 gives sharper CE. Default 1.0 (standard CE).")
+spsa_group.add_argument("--progressive-ce-weight", type=float, default=0.5,
+    help="Weight for intermediate CE in autoreg_progressive_ce. Final step CE weight is always 1.0. "
+         "Default 0.5 = intermediate CE counts half as much as final.")
 spsa_group.add_argument("--kalman-grad", action="store_true",
     help="Use Kalman-filtered gradient estimation. Maintains a state estimate and uncertainty "
          "for the gradient, updating with each new noisy observation. Reduces noise in gradient "
@@ -2239,7 +2245,7 @@ if args.solver == "spsa":
 
     # InceptionV3 classifier for class_ce loss (WITH classification head, not features)
     spsa_classifier = [None]
-    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce")
+    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce")
     if args.spsa_loss_type in _ce_loss_types or getattr(args, 'warmup_loss_type', 'denoising') in _ce_loss_types:
         from torchvision.models import inception_v3, Inception_V3_Weights
         from torchvision import transforms as _tv_transforms
@@ -4137,7 +4143,6 @@ if args.solver == "spsa":
                 return mse + ce_w * ce_loss
             elif loss_type == "autoreg_ce":
                 # Pure autoregressive classification: run ODE, classify endpoint.
-                # Same as class_ce but named explicitly for clarity.
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
@@ -4153,8 +4158,43 @@ if args.solver == "spsa":
                 x_clf = clf_transform(x_gen.float().clamp(0, 1))
                 with torch.no_grad():
                     logits = clf_model(x_clf)
+                ce_temp = getattr(args, 'ce_temperature', 1.0)
+                if ce_temp != 1.0:
+                    logits = logits / ce_temp
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 return ce_loss
+            elif loss_type == "autoreg_progressive_ce":
+                # Progressive CE: classify at EVERY ODE step, not just the endpoint.
+                # Intermediate steps give partial credit for coarse structure.
+                # Weight: intermediate steps get progressive_ce_weight, final gets 1.0.
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                clf_model, clf_transform = spsa_classifier[0]
+                ce_temp = getattr(args, 'ce_temperature', 1.0)
+                prog_w = getattr(args, 'progressive_ce_weight', 0.5)
+                total_ce = 0.0
+                total_weight = 0.0
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                    # Classify at this step
+                    x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                    with torch.no_grad():
+                        logits = clf_model(x_clf)
+                    if ce_temp != 1.0:
+                        logits = logits / ce_temp
+                    step_ce = F.cross_entropy(logits, y_b).item()
+                    # Weight: intermediate steps get prog_w, final step gets 1.0
+                    w = 1.0 if i == T - 1 else prog_w
+                    total_ce += w * step_ce
+                    total_weight += w
+                return total_ce / total_weight
             elif loss_type == "autoreg_endpoint_ce":
                 # Endpoint MSE + CE: Run ODE, compare final image to x_data (pixel MSE),
                 # plus InceptionV3 CE. No velocity matching — just "did you make the right image?"
