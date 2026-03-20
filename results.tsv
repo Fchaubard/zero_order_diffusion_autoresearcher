@@ -255,3 +255,11 @@ n/a	314.0042	11.8	discard	b19 l_cycles=4 (too slow)
 n/a	91.8671	9.5	discard	b19 smooth every 2nd call
 n/a	296.7256	9.5	discard	b19 gradient penalty on velocity (diverged)
 n/a	80.1372	9.5	keep	b19 EMA teacher distillation 0.05
+n/a	92.2923	8.9	discard	b20 LR 2e-3 no smooth
+n/a	97.5980	8.9	discard	b20 LR 1e-3 no smooth
+n/a	291.6008	8.9	discard	b20 LR 1.7e-3 no smooth (diverged)
+n/a	95.8685	8.9	discard	b20 LR 1.3e-3 no smooth
+n/a	96.6053	8.9	discard	b20 LR 1.5e-3 + WD 0.01 no smooth
+n/a	94.4226	8.9	discard	b20 LR 1.5e-3 + EMA distill no smooth
+n/a	317.9614	8.9	discard	b20 LR 1.5e-3 + hflip no smooth (CATASTROPHIC)
+n/a	101.1519	8.9	discard	b20 LR 1.5e-3 + TTA 3x no smooth
