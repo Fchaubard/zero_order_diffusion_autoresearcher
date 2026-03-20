@@ -1231,9 +1231,9 @@ print()  # newline after \r training log
 
 total_images = step * args.total_batch_size
 
-# Final eval using EMA model (Polyak averaging gives smoother weights → better FID)
-ema_model.eval()
-val_fid = evaluate_fid(ema_model, flow_matching, args.device_batch_size)
+# Final eval using raw model (EMA hurts at high LR — model keeps improving until the end)
+model.eval()
+val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
 
 # Final summary
 t_end = time.time()

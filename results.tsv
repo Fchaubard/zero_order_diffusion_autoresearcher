@@ -287,3 +287,11 @@ n/a	79.9623	8.9	keep	b23 NO EMA - raw model eval (EMA may hurt at high LR!)
 n/a	88.8163	8.9	discard	b23 seed=7 variance check
 n/a	93.2393	8.9	discard	b23 seed=99 variance check
 n/a	86.5477	8.9	discard	b23 seed=2024 variance check
+n/a	82.0556	8.9	keep	b24 no_ema seed=0
+n/a	78.8015	8.9	keep	b24 no_ema seed=1
+n/a	79.1974	8.9	keep	b24 no_ema seed=7
+n/a	81.8121	8.9	keep	b24 no_ema seed=99
+n/a	94.4232	8.9	discard	b24 ema seed=0 (EMA hurts at high LR!)
+n/a	98.9688	8.9	discard	b24 ema seed=1 (EMA hurts at high LR!)
+n/a	296.8676	8.9	discard	b24 no_ema lr=2e-3 (diverged)
+n/a	97.0782	8.9	discard	b24 no_ema lr=1e-3
