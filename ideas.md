@@ -529,3 +529,51 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: full_bptt_random_crop_aug
+Description: Instead of just hflip, add random crop augmentation. Currently prepare.py uses RandomCrop(64) on training data, but we can add an additional random crop+resize at training time: crop a random 48x48-64x64 region and resize to 64x64. This provides scale augmentation that's different from hflip's spatial augmentation. Must apply to both x and velocity targets consistently.
+Confidence: 6
+Why: Hflip gave -10 FID at the optimal LR. Random crops provide scale diversity — the model sees the same object at different scales. Color jitter failed (corrupted targets), but geometric augmentations like crop are safe because they apply equally to x_t and velocity. The key is to apply the crop BEFORE flow matching forward_sample so both noisy sample and velocity target are consistent.
+Time of idea generation: 2026-03-20 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_mixup_labels
+Description: Mixup on class labels only (not images): for 20% of samples, replace the class label with a random different class. This is like label smoothing but more aggressive — it forces the model to not rely too heavily on class conditioning and instead focus on the image content. Should improve diversity.
+Confidence: 4
+Why: Class conditioning is important for FID (class-conditional generation quality). But over-reliance on labels can reduce diversity within each class. Random label replacement forces the model to generate plausible images even with "wrong" labels, which may improve the diversity component of FID. Risk: could hurt class-conditional quality.
+Time of idea generation: 2026-03-20 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: full_bptt_warm_restart_lr
+Description: Instead of linear warmup + linear warmdown, use a warm restart (cosine annealing with restarts). Reset the LR back to peak every 25% of training. This is the SGDR schedule from Loshchilov & Hutter 2017. Each restart allows the optimizer to escape local minima and explore new regions of the loss landscape.
+Confidence: 5
+Why: With full BPTT and high LR, the model converges fast but may get stuck. Warm restarts provide periodic "jolts" that can escape local minima. The cosine annealing within each cycle ensures smooth convergence between restarts. SGDR has shown benefits in vision tasks. The risk is that restarts may undo good progress.
+Time of idea generation: 2026-03-20 01:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

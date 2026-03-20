@@ -239,3 +239,11 @@ n/a	103.3446	9.5	discard	b17 remove spatial smooth (still needed)
 n/a	97.5929	9.5	discard	b17 cosine weight 1.0
 n/a	93.6064	9.5	discard	b17 WD 0.01 no freeze smooth
 n/a	319.5215	12.5	discard	b17 h_cycles=3 full BPTT (too slow)
+n/a	264.1868	9.5	discard	b18 random crop 48-64 + resize augmentation
+n/a	250.2941	9.5	discard	b18 warm restart LR (SGDR 4 restarts)
+n/a	95.2404	9.5	discard	b18 mixup labels (20% random class)
+n/a	240.1423	9.5	discard	b18 longer warmup 20%
+n/a	104.8617	9.5	discard	b18 EMA starting at 0.98
+n/a	96.1152	9.5	discard	b18 cosine weight 0.75
+n/a	95.6181	9.5	discard	b18 hflip + WD 0.02 + LR 8.5e-4
+n/a	83.7603	9.5	discard	b18 hflip without x0 loss (simplification)
