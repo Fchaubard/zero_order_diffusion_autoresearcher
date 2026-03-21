@@ -399,3 +399,11 @@ n/a	249.5267	8.8	discard	b37 sinusoidal pos embed (CATASTROPHIC)
 n/a	59.2703	8.8	keep	b37 no hflip (SIMPLIFICATION — same or better FID!)
 n/a	61.9398	8.8	discard	b37 fail threshold 50
 n/a	61.2139	8.8	discard	b37 seed=33333 variance
+n/a	61.2487	8.8	discard	b38 exponential warmdown
+n/a	62.6067	8.8	discard	b38 truncated normal init
+n/a	55.0772	16.6	keep	b38 dual-t loss (two timesteps per image)
+n/a	57.4232	8.8	keep	b38 accum2 batch128
+n/a	54.2135	8.8	keep	b38 clamp velocity prediction magnitude *** NEW BEST 54.21 ***
+n/a	60.1867	8.8	discard	b38 seed=44444
+n/a	61.1255	8.8	discard	b38 seed=55555
+n/a	60.1513	8.8	discard	b38 seed=66666

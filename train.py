@@ -1074,6 +1074,12 @@ while True:
                 x_t, velocity = flow_matching.forward_sample(x, t)
                 # (hflip removed — not needed at optimal LR+beta2)
                 pred = model(x_t, t, class_labels=y)
+                # Clamp prediction magnitude to prevent outliers
+                with torch.no_grad():
+                    max_mag = velocity.flatten(1).norm(dim=1).max() * 3
+                pred_mag = pred.flatten(1).norm(dim=1, keepdim=True).view(-1,1,1,1)
+                scale = torch.clamp(max_mag / (pred_mag + 1e-8), max=1.0)
+                pred = pred * scale
                 huber = F.l1_loss(pred, velocity)
                 cos = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
                 loss = huber + 1.0 * cos
