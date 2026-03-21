@@ -511,3 +511,11 @@ n/a	55.9099	16.6	discard	b49 stratified dual-t ([0,0.5]+[0.5,1])
 n/a	54.6017	16.6	discard	b49 seed=21
 n/a	55.6123	16.6	discard	b49 seed=23
 n/a	57.5189	16.6	discard	b49 seed=31
+n/a	57.0804	16.6	discard	b50 diverse_accum_t (stratified by micro-step)
+n/a	55.9299	16.6	discard	b50 learned_clamp (same as fixed)
+n/a	64.2535	16.6	discard	b50 normalized velocity targets (worse)
+n/a	0.0000	0.0	crash	b50 explicit dir+mag decomposition (crash)
+n/a	57.1007	16.6	discard	b50 seed=37
+n/a	56.3620	16.6	discard	b50 seed=41
+n/a	54.9729	16.6	discard	b50 seed=43
+n/a	55.7854	16.6	discard	b50 seed=47
