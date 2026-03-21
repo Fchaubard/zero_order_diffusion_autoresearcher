@@ -447,3 +447,11 @@ n/a	57.7577	16.6	discard	b43 ReLU instead of SiLU in AdaLN
 n/a	62.8816	16.6	discard	b43 batch512 dual-t
 n/a	65.7433	16.6	discard	b43 no warm-start z_H (warm-start contributes ~10 FID)
 n/a	56.4343	16.6	discard	b43 seed=3
+n/a	73.0159	16.6	discard	b44 flat recursion (no z_L — hierarchy IS important!)
+n/a	85.3174	16.6	discard	b44 h1_l6 (too many L without H)
+n/a	79.2753	16.6	discard	b44 h1_l8 (same problem)
+n/a	56.5262	16.6	discard	b44 h3_l2 (competitive structure)
+n/a	59.7173	16.6	discard	b44 no reverse + no TTA (-4 FID combined)
+n/a	57.1737	16.6	discard	b44 clamp 4x with dual-t
+n/a	67.5735	33.1	discard	b44 patch_size=2 with dual-t (too slow)
+n/a	55.2079	16.6	discard	b44 seed=4
