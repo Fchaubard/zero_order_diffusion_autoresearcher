@@ -367,3 +367,11 @@ n/a	61.6469	8.8	discard	b33 cos=0.8
 n/a	67.8193	8.8	discard	b33 cos=1.2 (too much)
 n/a	62.9351	8.9	discard	b33 multi-scale coarse-to-fine (fixed)
 n/a	61.4771	8.8	discard	b33 warmdown 40%
+n/a	63.1594	10.7	discard	b34 axial attention (row+column)
+n/a	329.3433	9.1	discard	b34 separate fwd/rev blocks (diverged — shared weights essential!)
+n/a	0.0000	0.0	crash	b34 conv+attention hybrid (shape mismatch)
+n/a	63.0163	8.8	discard	b34 no TTA (TTA 2x contributes ~4 FID)
+n/a	64.4888	3.9	discard	b34 n_embd=1024 patch_size=8
+n/a	272.9899	8.8	discard	b34 no momentum beta1=0 (diverged)
+n/a	59.9007	8.8	keep	b34 warmup 5% (slightly better than 10%)
+n/a	64.5910	8.8	discard	b34 warmdown 50% final_lr=0.1
