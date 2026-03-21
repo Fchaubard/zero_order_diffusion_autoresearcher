@@ -479,3 +479,11 @@ n/a	61.9427	12.4	discard	b46 l2 seed=7
 n/a	60.1787	12.4	discard	b46 l2 seed=99
 n/a	63.3121	12.4	discard	b46 l2+Laplace seed=42
 n/a	63.9066	12.4	discard	b46 l2 seed=2024
+n/a	66.1225	16.6	discard	b46 Laplace noise schedule (WORSE than uniform!)
+n/a	66.9718	16.8	discard	b46 skip connection DiT (hurts)
+n/a	60.1429	12.4	discard	b46 h2l2 seed=0
+n/a	60.5394	12.4	discard	b46 h2l2 seed=1
+n/a	64.1960	12.4	discard	b46 h2l2 seed=7 (high variance!)
+n/a	62.2679	12.4	discard	b46 h2l2 + Laplace (combined worse)
+n/a	72.7924	8.3	discard	b46 h2l1 (too few cycles)
+n/a	66.4027	12.4	discard	b46 h2l2 LR 2.5e-3 (too high)
