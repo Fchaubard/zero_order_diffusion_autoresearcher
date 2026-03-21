@@ -383,3 +383,11 @@ n/a	61.2573	8.8	discard	b35 warmup 3%
 n/a	61.0770	8.8	discard	b35 warmup 1%
 n/a	75.3187	16.6	discard	b35 multi-crop ensemble (velocity averaging bad)
 n/a	59.6228	8.8	discard	b35 beta2=0.93 (within noise of 0.95)
+n/a	63.0116	8.8	discard	b36 sigma_min=0.01
+n/a	75.5142	8.8	discard	b36 sigma_min=0.1 (too noisy)
+n/a	67.1361	8.8	discard	b36 batch512 accum8
+n/a	60.4475	8.8	discard	b36 batch128 accum2
+n/a	75.2992	8.8	discard	b36 no warmdown (CRITICAL — warmdown needed!)
+n/a	60.5092	8.8	discard	b36 tight schedule (warmup5 warmdown20)
+n/a	60.9854	8.8	discard	b36 seed=11111 variance
+n/a	60.8232	8.8	discard	b36 seed=22222 variance
