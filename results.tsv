@@ -431,3 +431,11 @@ n/a	57.3178	16.6	discard	b41 no TTA with clamp+dual-t
 n/a	55.7031	16.6	discard	b41 cos=1.5 with clamp+dual-t
 n/a	54.3915	16.6	discard	b41 WD 0.001 with clamp+dual-t
 n/a	56.2901	16.6	discard	b41 seed=12345 with clamp+dual-t
+n/a	55.3806	16.6	discard	b42 per-sample clamp v2
+n/a	56.3464	16.6	discard	b42 t-weighted cosine loss
+n/a	62.4453	16.6	discard	b42 90-degree rotation augmentation
+n/a	0.0000	0.0	crash	b42 patch_size=3 (doesn't divide 64)
+n/a	54.8937	16.6	discard	b42 seed=77777
+n/a	57.5764	16.6	discard	b42 seed=88888
+n/a	55.5414	16.6	discard	b42 seed=99999
+n/a	55.1849	16.6	discard	b42 seed=11
