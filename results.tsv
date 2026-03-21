@@ -375,3 +375,11 @@ n/a	64.4888	3.9	discard	b34 n_embd=1024 patch_size=8
 n/a	272.9899	8.8	discard	b34 no momentum beta1=0 (diverged)
 n/a	59.9007	8.8	keep	b34 warmup 5% (slightly better than 10%)
 n/a	64.5910	8.8	discard	b34 warmdown 50% final_lr=0.1
+n/a	60.5418	8.8	discard	b35 warmup 5% seed=0
+n/a	62.4858	8.8	discard	b35 warmup 5% seed=1
+n/a	60.6989	8.8	discard	b35 warmup 5% seed=7
+n/a	60.1094	8.8	discard	b35 warmup 5% seed=99
+n/a	61.2573	8.8	discard	b35 warmup 3%
+n/a	61.0770	8.8	discard	b35 warmup 1%
+n/a	75.3187	16.6	discard	b35 multi-crop ensemble (velocity averaging bad)
+n/a	59.6228	8.8	discard	b35 beta2=0.93 (within noise of 0.95)

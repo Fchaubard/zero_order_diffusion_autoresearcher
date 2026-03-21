@@ -769,3 +769,19 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: multi_crop_ensemble_training
+Description: During each training step, process the SAME image at 3 different random crops (center 64x64, random 56x56→resize to 64, random 48x48→resize to 64) and average the velocity predictions before computing loss. This is like a "model ensemble during training" — the model sees each image at multiple scales simultaneously. The averaged prediction should be smoother and more accurate. This uses 3x VRAM (26GB, still well within 80GB) but gives a much richer training signal per image. Implementation: for each batch, create 3 augmented versions, forward all 3, average predictions, compute single loss against the original-scale velocity.
+Confidence: 5
+Why: Multi-crop evaluation is standard in image classification (improves accuracy by 1-2%). Applying this during TRAINING forces the model to produce scale-consistent velocity predictions, which should improve the ODE trajectory quality. The 3x compute cost is affordable (we're at 11% GPU utilization). The key insight is that FID measures the full distribution, and scale consistency helps coverage.
+Time of idea generation: 2026-03-21 02:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
