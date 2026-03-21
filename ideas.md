@@ -785,3 +785,35 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: laplace_noise_schedule
+Description: Replace uniform timestep sampling t~U[0,1] with a Laplace (double-exponential) distribution centered at t=0.5. The Laplace distribution puts more probability mass near t=0.5 (medium noise) and less at the extremes (t~0 pure noise, t~1 clean). This was shown in "Improved Noise Schedule for Diffusion Training" (ICCV 2025) to give 25.9% FID improvement over uniform sampling. Implementation: sample from Laplace(loc=0.5, scale=0.2), clamp to [0,1]. Very simple change — just one line of code.
+Confidence: 7
+Why: Published result from ICCV 2025 showing 25.9% FID improvement. The intuition is that medium-noise timesteps (t~0.5) are the most informative for learning — at t~0 the input is pure noise (hard to learn from), at t~1 it's nearly clean (easy, nothing to learn). Laplace focuses training on the "goldilocks zone" where the model can make meaningful progress. This is backed by peer-reviewed results and is trivial to implement.
+Time of idea generation: 2026-03-21 12:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: skip_connection_dit
+Description: Add a long skip connection from the input embedding directly to the output head, bypassing the entire recursive structure. This is inspired by "Skip-DiT" (ICCV 2025) which showed that adding skip connections to DiT achieves 4x faster convergence. Implementation: out = final_proj(z_H_processed) + 0.1 * final_proj(input_emb). The skip provides a "shortcut" that lets easy parts of the velocity be predicted directly while the recursion handles the hard parts.
+Confidence: 5
+Why: Skip-DiT achieved FID parity with DiT in 1.6M steps vs 7M — a 4x speedup. Our recursive model already has input injection at each cycle, but no DIRECT skip from input to output. Adding one gives the model a "path of least resistance" for easy velocity components. This could improve convergence speed, which matters in our 1-hour budget. Risk: the skip might dominate and the recursion becomes unused.
+Time of idea generation: 2026-03-21 12:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---

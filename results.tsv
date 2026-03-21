@@ -455,3 +455,19 @@ n/a	59.7173	16.6	discard	b44 no reverse + no TTA (-4 FID combined)
 n/a	57.1737	16.6	discard	b44 clamp 4x with dual-t
 n/a	67.5735	33.1	discard	b44 patch_size=2 with dual-t (too slow)
 n/a	55.2079	16.6	discard	b44 seed=4
+n/a	62.1929	32.0	discard	b45 2 L_layers LR 1.5e-3
+n/a	58.5824	32.0	discard	b45 2 L_layers LR 2e-3
+n/a	56.1335	20.7	discard	b45 h2 l4
+n/a	52.8628	12.4	keep	b45 h2 l2 *** NEW BEST 52.86 ***
+n/a	55.5716	16.6	discard	b45 LR 2.5e-3
+n/a	58.9642	16.6	discard	b45 cosine LR schedule
+n/a	63.2918	8.8	discard	b45 clamp only no dual-t (dual contributes ~8 FID)
+n/a	55.3809	16.6	discard	b45 seed=5
+n/a	62.1929	32.0	discard	b45 l_layers=2 LR 1.5e-3
+n/a	58.5824	32.0	discard	b45 l_layers=2 LR 2e-3
+n/a	56.1335	20.7	discard	b45 h2 l4 (more L-cycles)
+n/a	52.8628	12.4	keep	b45 h2 l2 (fewer L-cycles) *** NEW BEST 52.86 ***
+n/a	55.5716	16.6	discard	b45 LR 2.5e-3 with dual-t
+n/a	58.9642	16.6	discard	b45 cosine LR schedule with dual-t
+n/a	63.2918	8.8	discard	b45 clamp only no dual-t (dual-t contributes ~8 FID)
+n/a	55.3809	16.6	discard	b45 seed=5
