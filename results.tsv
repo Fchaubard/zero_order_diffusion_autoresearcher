@@ -423,3 +423,11 @@ n/a	56.0888	16.6	discard	b40 clamp+dual LR 2.2e-3
 n/a	53.9655	16.6	keep	b40 clamp+dual LR 1.8e-3
 n/a	56.3787	16.6	discard	b40 clamp+dual cos=0.75
 n/a	56.4504	16.6	discard	b40 clamp+dual clamp 4x
+n/a	60.0887	24.3	discard	b41 triple-t (3 timesteps, too slow)
+n/a	0.0000	0.0	crash	b41 per-sample clamp (script error)
+n/a	57.1045	16.6	discard	b41 TV regularization 0.001
+n/a	57.8045	12.5	discard	b41 no reverse pass with clamp+dual-t
+n/a	57.3178	16.6	discard	b41 no TTA with clamp+dual-t
+n/a	55.7031	16.6	discard	b41 cos=1.5 with clamp+dual-t
+n/a	54.3915	16.6	discard	b41 WD 0.001 with clamp+dual-t
+n/a	56.2901	16.6	discard	b41 seed=12345 with clamp+dual-t
