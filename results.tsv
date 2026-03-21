@@ -415,3 +415,11 @@ n/a	60.0311	8.8	discard	b39 clamp seed=1
 n/a	62.4123	8.8	discard	b39 clamp seed=7
 n/a	57.2303	8.8	discard	b39 clamp + batch128
 n/a	316.6896	8.8	discard	b39 soft clamp tanh (DIVERGED)
+n/a	56.3595	16.6	discard	b40 clamp+dual seed=0
+n/a	54.6006	16.6	discard	b40 clamp+dual seed=1
+n/a	55.4331	16.6	discard	b40 clamp+dual seed=7
+n/a	56.4078	16.6	discard	b40 clamp+dual seed=99
+n/a	56.0888	16.6	discard	b40 clamp+dual LR 2.2e-3
+n/a	53.9655	16.6	keep	b40 clamp+dual LR 1.8e-3
+n/a	56.3787	16.6	discard	b40 clamp+dual cos=0.75
+n/a	56.4504	16.6	discard	b40 clamp+dual clamp 4x
