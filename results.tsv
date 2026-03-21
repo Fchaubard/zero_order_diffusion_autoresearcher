@@ -391,3 +391,11 @@ n/a	75.2992	8.8	discard	b36 no warmdown (CRITICAL — warmdown needed!)
 n/a	60.5092	8.8	discard	b36 tight schedule (warmup5 warmdown20)
 n/a	60.9854	8.8	discard	b36 seed=11111 variance
 n/a	60.8232	8.8	discard	b36 seed=22222 variance
+n/a	65.7271	8.9	discard	b37 MSE+cos (L1 is better)
+n/a	64.1026	8.8	discard	b37 grad clip 10.0
+n/a	61.5410	8.8	discard	b37 per-channel L1
+n/a	61.5333	8.8	discard	b37 warmup steps 20
+n/a	249.5267	8.8	discard	b37 sinusoidal pos embed (CATASTROPHIC)
+n/a	59.2703	8.8	keep	b37 no hflip (SIMPLIFICATION — same or better FID!)
+n/a	61.9398	8.8	discard	b37 fail threshold 50
+n/a	61.2139	8.8	discard	b37 seed=33333 variance

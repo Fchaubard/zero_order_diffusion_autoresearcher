@@ -1072,9 +1072,7 @@ while True:
                 batch_size = x.shape[0]
                 t = torch.rand(batch_size, device=x.device)
                 x_t, velocity = flow_matching.forward_sample(x, t)
-                # Random horizontal flip augmentation
-                if torch.rand(1).item() < 0.5:
-                    x_t = x_t.flip(3); velocity = velocity.flip(3); x = x.flip(3)
+                # (hflip removed — not needed at optimal LR+beta2)
                 pred = model(x_t, t, class_labels=y)
                 huber = F.l1_loss(pred, velocity)
                 cos = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
