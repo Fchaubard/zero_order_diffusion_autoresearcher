@@ -1080,8 +1080,19 @@ while True:
                 pred_mag = pred.flatten(1).norm(dim=1, keepdim=True).view(-1,1,1,1)
                 scale = torch.clamp(max_mag / (pred_mag + 1e-8), max=1.0)
                 pred = pred * scale
-                huber = F.l1_loss(pred, velocity)
-                cos = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
+                # Dual-t: second forward with different timestep for richer gradient
+                t2 = torch.rand(batch_size, device=x.device)
+                x_t2, vel2 = flow_matching.forward_sample(x, t2)
+                pred2 = model(x_t2, t2, class_labels=y)
+                with torch.no_grad():
+                    max_mag2 = vel2.flatten(1).norm(dim=1).max() * 3
+                pred2_mag = pred2.flatten(1).norm(dim=1, keepdim=True).view(-1,1,1,1)
+                scale2 = torch.clamp(max_mag2 / (pred2_mag + 1e-8), max=1.0)
+                pred2 = pred2 * scale2
+                huber = 0.5 * (F.l1_loss(pred, velocity) + F.l1_loss(pred2, vel2))
+                cos1 = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
+                cos2 = 1.0 - F.cosine_similarity(pred2.flatten(1).float(), vel2.flatten(1).float(), dim=1).mean()
+                cos = 0.5 * (cos1 + cos2)
                 loss = huber + 1.0 * cos
             train_loss = huber.detach()
             loss = loss / grad_accum_steps
