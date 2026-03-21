@@ -503,3 +503,11 @@ n/a	58.4406	12.5	discard	b48 no reverse + no TTA (-2 FID combined)
 n/a	57.2994	16.6	discard	b48 seed=13
 n/a	55.6677	16.6	discard	b48 seed=17
 n/a	56.6044	16.6	discard	b48 seed=19
+n/a	60.8578	16.6	discard	b49 swap z_H and z_L roles each H_cycle
+n/a	56.3782	16.6	discard	b49 time-conditioned z_L init
+n/a	56.3397	16.6	discard	b49 class-conditioned z_L init
+n/a	56.8442	16.6	discard	b49 progressive clamp (5x→2x over training)
+n/a	55.9099	16.6	discard	b49 stratified dual-t ([0,0.5]+[0.5,1])
+n/a	54.6017	16.6	discard	b49 seed=21
+n/a	55.6123	16.6	discard	b49 seed=23
+n/a	57.5189	16.6	discard	b49 seed=31
