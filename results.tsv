@@ -407,3 +407,11 @@ n/a	54.2135	8.8	keep	b38 clamp velocity prediction magnitude *** NEW BEST 54.21 
 n/a	60.1867	8.8	discard	b38 seed=44444
 n/a	61.1255	8.8	discard	b38 seed=55555
 n/a	60.1513	8.8	discard	b38 seed=66666
+n/a	53.8839	16.6	keep	b39 clamp + dual-t combined *** NEW BEST 53.88 ***
+n/a	61.9462	8.8	discard	b39 clamp 2x (3x is better)
+n/a	60.2244	8.8	discard	b39 clamp 5x
+n/a	59.3482	8.8	discard	b39 clamp seed=0
+n/a	60.0311	8.8	discard	b39 clamp seed=1
+n/a	62.4123	8.8	discard	b39 clamp seed=7
+n/a	57.2303	8.8	discard	b39 clamp + batch128
+n/a	316.6896	8.8	discard	b39 soft clamp tanh (DIVERGED)
