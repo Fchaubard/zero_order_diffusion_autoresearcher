@@ -495,3 +495,11 @@ n/a	54.9038	16.6	discard	b47 seed=6
 n/a	54.8947	16.6	discard	b47 seed=8
 n/a	56.5831	16.6	discard	b47 seed=9
 n/a	56.1867	16.6	discard	b47 seed=10
+n/a	0.0000	0.0	crash	b48 loss plateau LR reduction (crash)
+n/a	63.0483	32.1	discard	b48 quad-t (4 timesteps, too slow)
+n/a	56.4897	12.5	discard	b48 no reverse (contributes ~1 FID)
+n/a	57.6243	16.6	discard	b48 no TTA (contributes ~1 FID)
+n/a	58.4406	12.5	discard	b48 no reverse + no TTA (-2 FID combined)
+n/a	57.2994	16.6	discard	b48 seed=13
+n/a	55.6677	16.6	discard	b48 seed=17
+n/a	56.6044	16.6	discard	b48 seed=19
