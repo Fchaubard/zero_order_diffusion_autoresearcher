@@ -471,3 +471,11 @@ n/a	55.5716	16.6	discard	b45 LR 2.5e-3 with dual-t
 n/a	58.9642	16.6	discard	b45 cosine LR schedule with dual-t
 n/a	63.2918	8.8	discard	b45 clamp only no dual-t (dual-t contributes ~8 FID)
 n/a	55.3809	16.6	discard	b45 seed=5
+n/a	66.1225	16.6	discard	b46 Laplace noise schedule (ICCV 2025 — doesn't transfer!)
+n/a	66.9718	16.6	discard	b46 Skip-DiT connection (diverts gradient from recursion)
+n/a	64.3004	12.4	discard	b46 l2 seed=0 (high variance)
+n/a	64.2776	12.4	discard	b46 l2 seed=1
+n/a	61.9427	12.4	discard	b46 l2 seed=7
+n/a	60.1787	12.4	discard	b46 l2 seed=99
+n/a	63.3121	12.4	discard	b46 l2+Laplace seed=42
+n/a	63.9066	12.4	discard	b46 l2 seed=2024

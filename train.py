@@ -50,7 +50,7 @@ solver_group.add_argument("--solver", type=str, default="tbptt",
 model_group = parser.add_argument_group("model architecture")
 model_group.add_argument("--h-cycles", type=int, default=2,
     help="Number of outer (H-level) recursive cycles (TRM-style)")
-model_group.add_argument("--l-cycles", type=int, default=2,
+model_group.add_argument("--l-cycles", type=int, default=3,
     help="Number of inner (L-level) recursive cycles per H-cycle")
 model_group.add_argument("--l-layers", type=int, default=1,
     help="Number of transformer layers in the shared L-level block")
