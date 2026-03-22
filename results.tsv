@@ -561,3 +561,11 @@ n/a	53.2486	16.6	discard	b55 anti-thetic dual-t (within noise)
 n/a	56.2351	16.6	discard	b55 seed=101
 n/a	59.3431	16.6	discard	b55 seed=103
 n/a	56.1475	16.6	discard	b55 seed=107
+n/a	54.5226	16.6	discard	b56 DART-inspired spatial denoising (neutral)
+n/a	55.9396	16.6	discard	b56 exponential cosine decay (neutral)
+n/a	56.9102	16.6	discard	b56 mirror anti-thetic dual-t (neutral)
+n/a	56.4632	16.6	discard	b56 z_H exploration noise 0.01 (neutral)
+n/a	56.0136	16.6	discard	b56 seed=109
+n/a	58.5697	16.6	discard	b56 seed=113
+n/a	57.2413	16.6	discard	b56 seed=127
+n/a	54.0624	16.6	discard	b56 seed=131
