@@ -168,7 +168,8 @@ spsa_group.add_argument("--spsa-loss-type", type=str, default="teacher",
              "gl_diversity", "gl_spectral", "diversity_mse", "gl_class_diversity",
              "class_ce", "gl_class_ce",
              "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce",
-             "autoreg_endpoint_ce", "autoreg_corrective_ce"],
+             "autoreg_endpoint_ce", "autoreg_corrective_ce",
+             "autoreg_feat_match", "autoreg_ce_feat"],
     help="SPSA loss type for zero-order training")
 spsa_group.add_argument("--loss-warmup-frac", type=float, default=0.0,
     help="Fraction of training to use --warmup-loss-type before switching to --spsa-loss-type. "
@@ -322,6 +323,9 @@ spsa_group.add_argument("--grad-verify", action="store_true",
     help="Verify SPSA gradient before applying: evaluate loss after proposed step, "
          "revert if loss increased. Prevents bad SPSA updates from noisy gradient estimates. "
          "Costs 1 extra forward pass per step (~0.5%% overhead).")
+spsa_group.add_argument("--grad-verify-threshold", type=float, default=0.05,
+    help="Revert threshold for grad-verify: revert if new_loss > avg_loss * (1 + threshold). "
+         "Default 0.05 (5%%). Lower = more conservative (reverts more steps). Higher = more permissive.")
 spsa_group.add_argument("--sign-consensus", type=int, default=0,
     help="Only update parameters where gradient sign agrees over last K steps (0=disabled). "
          "Maintains a running sign buffer and masks out parameters with flipping signs. "
@@ -439,6 +443,17 @@ spsa_group.add_argument("--ce-subsample", type=int, default=0,
     help="Subsample N images for InceptionV3 classification in autoreg_ce. 0=all images (default). "
          "E.g., 250 = classify 250 of 1000 images, ~4x faster steps but noisier CE. "
          "Same subset used for both +/- perturbations (deterministic seed).")
+spsa_group.add_argument("--label-smoothing", type=float, default=0.0,
+    help="Label smoothing for CE loss. 0.1 = 90%% on correct class, 10%%/999 on others. "
+         "Smooths the loss landscape, potentially giving more reliable SPSA gradients.")
+spsa_group.add_argument("--focal-gamma", type=float, default=0.0,
+    help="Focal loss gamma. When > 0, uses focal loss -(1-p)^gamma * log(p) instead of CE. "
+         "Down-weights easy examples, focuses gradient signal on hard examples. "
+         "gamma=2.0 is standard. 0=disabled (standard CE).")
+spsa_group.add_argument("--ce-flip-aug", action="store_true",
+    help="Random horizontal flip of generated images before InceptionV3 classification. "
+         "Regularizes CE loss by preventing exploitation of left/right artifacts. "
+         "InceptionV3 is trained with random flips so remains robust.")
 spsa_group.add_argument("--progressive-ce-weight", type=float, default=0.5,
     help="Weight for intermediate CE in autoreg_progressive_ce. Final step CE weight is always 1.0. "
          "Default 0.5 = intermediate CE counts half as much as final.")
@@ -1002,6 +1017,7 @@ class SPSATrainer:
         self._sign_history = None  # ring buffer of gradient signs
         self.lr_layer_scale = False  # set from args after construction
         self.grad_verify = False  # set from args after construction
+        self.grad_verify_threshold = 0.05  # revert if loss increases by more than this fraction
         self._verify_revert_count = 0
         self._verify_total_count = 0
         self._loss_ema = None  # EMA of loss for explosion detection
@@ -1583,7 +1599,7 @@ class SPSATrainer:
         if self.grad_verify:
             self._verify_total_count += 1
             new_loss = loss_fn(0)  # Single forward pass to verify
-            if new_loss > avg_loss * 1.05:  # Loss increased by >5%
+            if new_loss > avg_loss * (1.0 + self.grad_verify_threshold):  # Loss increased beyond threshold
                 # Revert the update
                 if self.use_adam and self.m is not None:
                     for i, info in enumerate(self.param_info):
@@ -2148,7 +2164,8 @@ else:
         print(f"  Sign consensus: only update params with consistent sign over {args.sign_consensus} steps")
     if args.grad_verify:
         trainer.grad_verify = True
-        print(f"  Gradient verification: will check loss after each update")
+        trainer.grad_verify_threshold = args.grad_verify_threshold
+        print(f"  Gradient verification: will check loss after each update (threshold={args.grad_verify_threshold:.0%})")
     if args.sparse_pert > 0:
         trainer.sparse_pert = args.sparse_pert
         print(f"  Sparse perturbation: {args.sparse_pert:.0%} of param groups perturbed each step")
@@ -2249,7 +2266,7 @@ if args.solver == "spsa":
 
     # InceptionV3 classifier for class_ce loss (WITH classification head, not features)
     spsa_classifier = [None]
-    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce")
+    _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce", "autoreg_ce_feat")
     if args.spsa_loss_type in _ce_loss_types or getattr(args, 'warmup_loss_type', 'denoising') in _ce_loss_types:
         from torchvision.models import inception_v3, Inception_V3_Weights
         from torchvision import transforms as _tv_transforms
@@ -2262,6 +2279,26 @@ if args.solver == "spsa":
         ])
         spsa_classifier[0] = (_clf_model, _clf_transform)
         print(f"InceptionV3 classifier loaded for class_ce loss (1000-way ImageNet)")
+
+    # InceptionV3 feature extractor for feature matching loss (WITHOUT classification head)
+    spsa_feat_extractor = [None]
+    _feat_loss_types = ("autoreg_feat_match", "autoreg_ce_feat")
+    if args.spsa_loss_type in _feat_loss_types:
+        from torchvision.models import inception_v3, Inception_V3_Weights
+        from torchvision import transforms as _tv_transforms
+        import os as _os
+        _feat_model = inception_v3(weights=Inception_V3_Weights.DEFAULT)
+        _feat_model.fc = torch.nn.Identity()  # Remove classification head → 2048-dim features
+        _feat_model.eval()
+        _feat_model = _feat_model.to(device)
+        _feat_transform = _tv_transforms.Compose([
+            _tv_transforms.Resize((299, 299), antialias=True),
+            _tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        STATS_DIR = _os.path.join(_os.path.expanduser("~"), ".cache", "autoresearch", "stats")
+        _ref_mu = torch.from_numpy(np.load(_os.path.join(STATS_DIR, "fid_mu.npy"))).float().to(device)
+        spsa_feat_extractor[0] = (_feat_model, _feat_transform, _ref_mu)
+        print(f"InceptionV3 feature extractor loaded for feature matching loss (2048-dim)")
 
     # Track which loss type is active (for logging during warmup phase)
     active_loss_type = [args.spsa_loss_type]
@@ -4159,23 +4196,42 @@ if args.solver == "spsa":
                     velocity = model(x_gen, t_tensor, class_labels=y_b)
                     x_gen = x_gen + velocity * dt
                 clf_model, clf_transform = spsa_classifier[0]
+                # Random horizontal flip augmentation
+                if getattr(args, 'ce_flip_aug', False):
+                    flip_gen = torch.Generator(device=dev)
+                    flip_gen.manual_seed(noise_seed[0] + batch_idx + 7777)
+                    flip_mask = torch.rand(x_gen.shape[0], 1, 1, 1, device=dev, generator=flip_gen) < 0.5
+                    x_gen_aug = torch.where(flip_mask, x_gen.flip(-1), x_gen)
+                else:
+                    x_gen_aug = x_gen
                 # Subsample for faster InceptionV3 if requested
                 ce_sub = getattr(args, 'ce_subsample', 0)
-                if ce_sub > 0 and x_gen.shape[0] > ce_sub:
+                if ce_sub > 0 and x_gen_aug.shape[0] > ce_sub:
                     sub_gen = torch.Generator(device=dev)
                     sub_gen.manual_seed(noise_seed[0] + batch_idx + 999)
-                    perm = torch.randperm(x_gen.shape[0], generator=sub_gen, device=dev)[:ce_sub]
-                    x_clf = clf_transform(x_gen[perm].float().clamp(0, 1))
+                    perm = torch.randperm(x_gen_aug.shape[0], generator=sub_gen, device=dev)[:ce_sub]
+                    x_clf = clf_transform(x_gen_aug[perm].float().clamp(0, 1))
                     y_sub = y_b[perm]
                 else:
-                    x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                    x_clf = clf_transform(x_gen_aug.float().clamp(0, 1))
                     y_sub = y_b
                 with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
                     logits = clf_model(x_clf)
                 ce_temp = getattr(args, 'ce_temperature', 1.0)
                 if ce_temp != 1.0:
                     logits = logits / ce_temp
-                ce_loss = F.cross_entropy(logits.float(), y_sub).item()
+                label_smooth = getattr(args, 'label_smoothing', 0.0)
+                focal_gamma = getattr(args, 'focal_gamma', 0.0)
+                if focal_gamma > 0:
+                    # Focal loss: -(1-p)^gamma * log(p), focuses on hard examples
+                    log_probs = F.log_softmax(logits.float(), dim=-1)
+                    probs = log_probs.exp()
+                    targets_one_hot = F.one_hot(y_sub, num_classes=logits.shape[-1]).float()
+                    focal_weight = (1.0 - (probs * targets_one_hot).sum(dim=-1)) ** focal_gamma
+                    ce_per_sample = F.cross_entropy(logits.float(), y_sub, reduction='none')
+                    ce_loss = (focal_weight * ce_per_sample).mean().item()
+                else:
+                    ce_loss = F.cross_entropy(logits.float(), y_sub, label_smoothing=label_smooth).item()
                 return ce_loss
             elif loss_type == "autoreg_progressive_ce":
                 # Progressive CE: classify at EVERY ODE step, not just the endpoint.
@@ -4190,6 +4246,7 @@ if args.solver == "spsa":
                 clf_model, clf_transform = spsa_classifier[0]
                 ce_temp = getattr(args, 'ce_temperature', 1.0)
                 prog_w = getattr(args, 'progressive_ce_weight', 0.5)
+                label_smooth = getattr(args, 'label_smoothing', 0.0)
                 total_ce = 0.0
                 total_weight = 0.0
                 for i in range(T):
@@ -4199,11 +4256,11 @@ if args.solver == "spsa":
                     x_gen = x_gen + velocity * dt
                     # Classify at this step
                     x_clf = clf_transform(x_gen.float().clamp(0, 1))
-                    with torch.no_grad():
+                    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
                         logits = clf_model(x_clf)
                     if ce_temp != 1.0:
                         logits = logits / ce_temp
-                    step_ce = F.cross_entropy(logits, y_b).item()
+                    step_ce = F.cross_entropy(logits.float(), y_b, label_smoothing=label_smooth).item()
                     # Weight: intermediate steps get prog_w, final step gets 1.0
                     w = 1.0 if i == T - 1 else prog_w
                     total_ce += w * step_ce
@@ -4269,6 +4326,41 @@ if args.solver == "spsa":
                 if ce_w == 0.0:
                     ce_w = 1.0
                 return mse + ce_w * ce_loss
+
+            elif loss_type in ("autoreg_feat_match", "autoreg_ce_feat"):
+                # Feature matching: run ODE, extract InceptionV3 pool features,
+                # compute L2 distance to reference ImageNet feature mean.
+                # autoreg_feat_match: pure feature matching
+                # autoreg_ce_feat: CE + feature matching (weighted sum)
+                dev = x_b.device
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(noise_seed[0] + batch_idx)
+                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                x_gen = noise.clone()
+                dt = 1.0 / T
+                for i in range(T):
+                    t_val = i / T
+                    t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
+                    velocity = model(x_gen, t_tensor, class_labels=y_b)
+                    x_gen = x_gen + velocity * dt
+                # Extract features using feature extractor
+                feat_model, feat_transform, ref_mu = spsa_feat_extractor[0]
+                x_clf = feat_transform(x_gen.float().clamp(0, 1))
+                with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
+                    features = feat_model(x_clf)  # (B, 2048)
+                gen_mu = features.float().mean(dim=0)  # (2048,)
+                feat_loss = ((gen_mu - ref_mu) ** 2).sum().item()  # L2 distance
+                if loss_type == "autoreg_ce_feat":
+                    # Also compute CE for combined loss
+                    clf_model, clf_transform = spsa_classifier[0]
+                    x_clf2 = clf_transform(x_gen.float().clamp(0, 1))
+                    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
+                        logits = clf_model(x_clf2)
+                    label_smooth = getattr(args, 'label_smoothing', 0.0)
+                    ce_loss = F.cross_entropy(logits.float(), y_b, label_smoothing=label_smooth).item()
+                    feat_w = getattr(args, 'diversity_weight', 0.1)
+                    return ce_loss + feat_w * feat_loss
+                return feat_loss
 
     # Wrap loss function with loss scaling (effective LR multiplier for tied lr=eps)
     if _loss_scale != 1.0:
