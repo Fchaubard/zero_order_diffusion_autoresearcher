@@ -881,3 +881,19 @@ Analysis: The auxiliary denoising loss doubled forward passes per step (model ru
 Conclusion: Auxiliary denoising curriculum doesn't help within 1-hour budget. The idea would work better with longer training (where the step reduction matters less) or if the denoising REPLACED the velocity loss entirely. For the current setup, the vanilla L1+cosine+dual-t loss is optimal.
 Next Ideas to Try: A version where the recursion IS the denoiser (not auxiliary) — each H_cycle produces a progressively less noisy image. This requires restructuring the model's forward pass to output intermediate images, not velocities. But this would break compatibility with prepare.py's evaluation unless the final output is converted to velocity.
 ---
+
+---
+idea_id: dart_style_spatial_denoising
+Description: Inspired by Apple's DART (Denoising Autoregressive Transformer, 2025): instead of treating all 256 patches equally, process them in a spatial order (raster scan) with the recursion revealing patches progressively. Early recursive cycles focus on coarse global structure (low-frequency), later cycles add fine details (high-frequency). Implementation: at each L_cycle within an H_cycle, process patches in groups of 64 (4 groups of 8x8) rather than all 256 at once. Each group conditions on the previous group's output. This creates a coarse-to-fine spatial denoising within the recursion. The first group establishes global structure, subsequent groups refine local details.
+Confidence: 4
+Why: DART shows that spatial ordering matters for denoising — processing patches in a meaningful order improves coherence. Our model processes all 256 patches simultaneously with global attention, which may be suboptimal. A progressive revelation strategy lets each recursive cycle specialize: early cycles handle coarse structure, later cycles handle details. Risk: the implementation is complex, may break the existing attention pattern, and the overhead of group processing could reduce total training steps.
+Time of idea generation: 2026-03-22 22:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
