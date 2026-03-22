@@ -450,6 +450,12 @@ spsa_group.add_argument("--focal-gamma", type=float, default=0.0,
     help="Focal loss gamma. When > 0, uses focal loss -(1-p)^gamma * log(p) instead of CE. "
          "Down-weights easy examples, focuses gradient signal on hard examples. "
          "gamma=2.0 is standard. 0=disabled (standard CE).")
+spsa_group.add_argument("--classifier", type=str, default="inception_v3",
+    choices=["inception_v3", "mobilenet_v3_large", "mobilenet_v3_small",
+             "efficientnet_b0", "resnet50", "resnet18"],
+    help="Frozen classifier for autoreg_ce loss. inception_v3=77.3%% acc (slow, 299px). "
+         "mobilenet_v3_large=75.2%% (fast, 224px). mobilenet_v3_small=67.7%% (very fast). "
+         "efficientnet_b0=77.1%% (fast). resnet50=76.1%%. resnet18=69.8%% (fastest).")
 spsa_group.add_argument("--ce-flip-aug", action="store_true",
     help="Random horizontal flip of generated images before InceptionV3 classification. "
          "Regularizes CE loss by preventing exploitation of left/right artifacts. "
@@ -491,6 +497,23 @@ spsa_group.add_argument("--lora-alpha", type=float, default=1.0,
     help="LoRA scaling factor: output = W_frozen @ x + (alpha/rank) * A @ B @ x. "
          "Higher alpha = LoRA has more influence. Default 1.0 = standard scaling.")
 
+spsa_group.add_argument("--save-model", type=str, default=None,
+    help="Save final model state_dict to this path after training (for model soup)")
+
+# Degradation curriculum: progressive image corruption instead of Gaussian noise
+spsa_group.add_argument("--degrade-curriculum", action="store_true",
+    help="Enable degradation curriculum: start from mildly corrupted images, gradually increase "
+         "to full Gaussian noise. Loss-gated advancement — only increases degradation when model "
+         "has learned current level. At level=1.0, training is identical to standard autoreg_ce.")
+spsa_group.add_argument("--degrade-start", type=float, default=0.2,
+    help="Starting degradation level (0=clean, 1=full noise). Default 0.2 = mild corruption.")
+spsa_group.add_argument("--degrade-step", type=float, default=0.05,
+    help="How much to increase degradation level when loss gate triggers. Default 0.05.")
+spsa_group.add_argument("--degrade-loss-factor", type=float, default=0.95,
+    help="Advance curriculum when loss_ema < initial_loss * factor. Default 0.95 = 5%% improvement.")
+spsa_group.add_argument("--degrade-patience", type=int, default=5,
+    help="Steps at new level before allowing another advancement. Prevents too-fast progression.")
+
 # SPSA search strategy
 search_group = parser.add_argument_group("SPSA search strategy")
 search_group.add_argument("--search-strategy", type=str, default="none",
@@ -515,6 +538,69 @@ args = parser.parse_args()
 
 # Derived: epsilon defaults to lr if not set
 SPSA_EPSILON = args.epsilon if args.epsilon is not None else args.lr
+
+# ---------------------------------------------------------------------------
+# Image Degradation for Curriculum Training
+# ---------------------------------------------------------------------------
+
+def degrade_image(x, level, gen):
+    """Progressive image degradation from clean to Gaussian noise.
+
+    Smoothly transitions through corruption types:
+    - level=0: identity (clean image)
+    - level 0→0.7: increasing salt-and-pepper + additive Gaussian noise
+    - level 0.7→1.0: blend from corrupted toward pure Gaussian noise
+    - level=1.0: pure Gaussian noise (matches eval distribution)
+
+    All randomness uses `gen` for SPSA reproducibility (same degradation for +eps/-eps).
+    """
+    if level <= 0:
+        return x.clone()
+
+    B, C, H, W = x.shape
+    dev = x.device
+    dtype = x.dtype
+
+    # Always generate Gaussian noise (needed for blending at high levels)
+    gauss_noise = torch.randn(x.shape, device=dev, dtype=dtype, generator=gen)
+
+    if level >= 1.0:
+        return gauss_noise
+
+    # Corruption phase (level 0 to 0.7): S&P + additive noise
+    corruption_intensity = min(level / 0.7, 1.0)
+    out = x.clone()
+
+    # Salt-and-pepper: up to 30% pixels corrupted at max corruption
+    sp_amount = corruption_intensity * 0.3
+    if sp_amount > 0:
+        mask = torch.rand(B, 1, H, W, device=dev, generator=gen)
+        salt = mask < sp_amount / 2
+        pepper = mask > (1 - sp_amount / 2)
+        # Use the image's actual range (may be normalized)
+        out = torch.where(salt.expand_as(x), torch.ones_like(x), out)
+        out = torch.where(pepper.expand_as(x), -torch.ones_like(x), out)
+
+    # Additive Gaussian noise: up to std=0.5 at max corruption
+    noise_std = corruption_intensity * 0.5
+    if noise_std > 0:
+        additive = torch.randn(x.shape, device=dev, dtype=dtype, generator=gen) * noise_std
+        out = out + additive
+
+    # Blend toward Gaussian noise (level 0.7 to 1.0)
+    if level > 0.7:
+        blend = (level - 0.7) / 0.3  # 0 → 1
+        out = (1 - blend) * out + blend * gauss_noise
+
+    return out
+
+# Degradation curriculum state (module-level, updated in training loop)
+_degrade_state = {
+    'level': 0.0,       # current degradation level
+    'loss_ema': None,    # exponential moving average of loss
+    'level_loss': None,  # loss when level was last advanced
+    'steps_at_level': 0, # steps since last level change
+}
 
 # ---------------------------------------------------------------------------
 # Diffusion Transformer Model
@@ -2264,21 +2350,46 @@ if args.solver == "spsa":
         spsa_ref_sigma[0] = np.load(_os.path.join(STATS_DIR, "fid_sigma.npy"))
         print(f"Inception feature matching: loaded reference stats (dim={spsa_ref_mu[0].shape[0]})")
 
-    # InceptionV3 classifier for class_ce loss (WITH classification head, not features)
+    # Classifier for class_ce loss (WITH classification head, not features)
     spsa_classifier = [None]
     _ce_loss_types = ("class_ce", "gl_class_ce", "autoreg_mse_ce", "autoreg_ce", "autoreg_progressive_ce", "autoreg_endpoint_ce", "autoreg_corrective_ce", "autoreg_ce_feat")
     if args.spsa_loss_type in _ce_loss_types or getattr(args, 'warmup_loss_type', 'denoising') in _ce_loss_types:
-        from torchvision.models import inception_v3, Inception_V3_Weights
         from torchvision import transforms as _tv_transforms
-        _clf_model = inception_v3(weights=Inception_V3_Weights.DEFAULT)
+        _clf_name = getattr(args, 'classifier', 'inception_v3')
+        if _clf_name == 'inception_v3':
+            from torchvision.models import inception_v3, Inception_V3_Weights
+            _clf_model = inception_v3(weights=Inception_V3_Weights.DEFAULT)
+            _clf_size = 299
+        elif _clf_name == 'mobilenet_v3_large':
+            from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
+            _clf_model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
+            _clf_size = 224
+        elif _clf_name == 'mobilenet_v3_small':
+            from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+            _clf_model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+            _clf_size = 224
+        elif _clf_name == 'efficientnet_b0':
+            from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+            _clf_model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+            _clf_size = 224
+        elif _clf_name == 'resnet50':
+            from torchvision.models import resnet50, ResNet50_Weights
+            _clf_model = resnet50(weights=ResNet50_Weights.DEFAULT)
+            _clf_size = 224
+        elif _clf_name == 'resnet18':
+            from torchvision.models import resnet18, ResNet18_Weights
+            _clf_model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            _clf_size = 224
+        else:
+            raise ValueError(f"Unknown classifier: {_clf_name}")
         _clf_model.eval()
-        _clf_model = _clf_model.to(device)
+        _clf_model = _clf_model.to(device).to(memory_format=torch.channels_last)
         _clf_transform = _tv_transforms.Compose([
-            _tv_transforms.Resize((299, 299), antialias=True),
+            _tv_transforms.Resize((_clf_size, _clf_size), antialias=True),
             _tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         spsa_classifier[0] = (_clf_model, _clf_transform)
-        print(f"InceptionV3 classifier loaded for class_ce loss (1000-way ImageNet)")
+        print(f"{_clf_name} classifier loaded for class_ce loss (1000-way ImageNet, {_clf_size}px, channels_last)")
 
     # InceptionV3 feature extractor for feature matching loss (WITHOUT classification head)
     spsa_feat_extractor = [None]
@@ -4104,7 +4215,7 @@ if args.solver == "spsa":
                 # Images are in [0, 1] range, need to apply InceptionV3 preprocessing
                 x_clf = clf_transform(x.float().clamp(0, 1))
                 with torch.no_grad():
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 # Cross-entropy loss: true class = y_b (ImageNet class labels)
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 return ce_loss
@@ -4139,7 +4250,7 @@ if args.solver == "spsa":
                 clf_model, clf_transform = spsa_classifier[0]
                 x_clf = clf_transform(x_gen.float().clamp(0, 1))
                 with torch.no_grad():
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 # Combined: GL + ce_weight * CE
                 ce_w = getattr(args, 'diversity_weight', 0.0)
@@ -4176,7 +4287,7 @@ if args.solver == "spsa":
                 clf_model, clf_transform = spsa_classifier[0]
                 x_clf = clf_transform(x_gen.float().clamp(0, 1))
                 with torch.no_grad():
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 ce_w = getattr(args, 'diversity_weight', 0.0)
                 if ce_w == 0.0:
@@ -4187,8 +4298,12 @@ if args.solver == "spsa":
                 dev = x_b.device
                 gen = torch.Generator(device=dev)
                 gen.manual_seed(noise_seed[0] + batch_idx)
-                noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
-                x_gen = noise.clone()
+                # Degradation curriculum: start from degraded image instead of noise
+                if getattr(args, 'degrade_curriculum', False) and _degrade_state['level'] < 1.0:
+                    x_gen = degrade_image(x_b, _degrade_state['level'], gen)
+                else:
+                    noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
+                    x_gen = noise.clone()
                 dt = 1.0 / T
                 for i in range(T):
                     t_val = i / T
@@ -4216,7 +4331,7 @@ if args.solver == "spsa":
                     x_clf = clf_transform(x_gen_aug.float().clamp(0, 1))
                     y_sub = y_b
                 with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_temp = getattr(args, 'ce_temperature', 1.0)
                 if ce_temp != 1.0:
                     logits = logits / ce_temp
@@ -4257,7 +4372,7 @@ if args.solver == "spsa":
                     # Classify at this step
                     x_clf = clf_transform(x_gen.float().clamp(0, 1))
                     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-                        logits = clf_model(x_clf)
+                        logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                     if ce_temp != 1.0:
                         logits = logits / ce_temp
                     step_ce = F.cross_entropy(logits.float(), y_b, label_smoothing=label_smooth).item()
@@ -4286,7 +4401,7 @@ if args.solver == "spsa":
                 clf_model, clf_transform = spsa_classifier[0]
                 x_clf = clf_transform(x_gen.float().clamp(0, 1))
                 with torch.no_grad():
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 ce_w = getattr(args, 'diversity_weight', 0.0)
                 if ce_w == 0.0:
@@ -4320,7 +4435,7 @@ if args.solver == "spsa":
                 clf_model, clf_transform = spsa_classifier[0]
                 x_clf = clf_transform(x_gen.float().clamp(0, 1))
                 with torch.no_grad():
-                    logits = clf_model(x_clf)
+                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_loss = F.cross_entropy(logits, y_b).item()
                 ce_w = getattr(args, 'diversity_weight', 0.0)
                 if ce_w == 0.0:
@@ -4355,7 +4470,7 @@ if args.solver == "spsa":
                     clf_model, clf_transform = spsa_classifier[0]
                     x_clf2 = clf_transform(x_gen.float().clamp(0, 1))
                     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-                        logits = clf_model(x_clf2)
+                        logits = clf_model(x_clf2.to(memory_format=torch.channels_last))
                     label_smooth = getattr(args, 'label_smoothing', 0.0)
                     ce_loss = F.cross_entropy(logits.float(), y_b, label_smoothing=label_smooth).item()
                     feat_w = getattr(args, 'diversity_weight', 0.1)
@@ -5041,6 +5156,32 @@ while True:
 
         train_loss_f = trainer.step(spsa_loss_fn, step, per_pert_hook=_pert_hook)
 
+        # Degradation curriculum: advance level when loss improves enough
+        if getattr(args, 'degrade_curriculum', False):
+            if _degrade_state['loss_ema'] is None:
+                # Initialize on first step
+                _degrade_state['level'] = getattr(args, 'degrade_start', 0.2)
+                _degrade_state['loss_ema'] = train_loss_f
+                _degrade_state['level_loss'] = train_loss_f
+                _degrade_state['steps_at_level'] = 0
+                print(f"  [degrade] initialized: level={_degrade_state['level']:.2f}, loss={train_loss_f:.4f}")
+            else:
+                # Update loss EMA
+                _degrade_state['loss_ema'] = 0.9 * _degrade_state['loss_ema'] + 0.1 * train_loss_f
+                _degrade_state['steps_at_level'] += 1
+                # Check if we should advance
+                patience = getattr(args, 'degrade_patience', 5)
+                factor = getattr(args, 'degrade_loss_factor', 0.95)
+                step_size = getattr(args, 'degrade_step', 0.05)
+                if (_degrade_state['steps_at_level'] >= patience and
+                    _degrade_state['loss_ema'] < _degrade_state['level_loss'] * factor and
+                    _degrade_state['level'] < 1.0):
+                    old_level = _degrade_state['level']
+                    _degrade_state['level'] = min(1.0, _degrade_state['level'] + step_size)
+                    _degrade_state['level_loss'] = _degrade_state['loss_ema']
+                    _degrade_state['steps_at_level'] = 0
+                    print(f"  [degrade] advanced: {old_level:.2f} -> {_degrade_state['level']:.2f} (loss_ema={_degrade_state['loss_ema']:.4f})")
+
         # Simulated annealing noise: add random perturbation every 500 steps
         if args.sa_noise > 0 and step > 0 and step % 500 == 0:
             _sa_progress = min(total_training_time / args.time_budget, 1.0)
@@ -5352,6 +5493,13 @@ class Float32Wrapper(nn.Module):
         return self.model(*args, **kwargs).float()
     def parameters(self):
         return self.model.parameters()
+
+# Save model checkpoint if requested (after SWA, before FID eval)
+if getattr(args, 'save_model', None):
+    save_path = args.save_model
+    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
+    torch.save(model_for_eval.state_dict(), save_path)
+    print(f"Saved model to {save_path}")
 
 fid_batch_size = min(args.device_batch_size, 256)  # Cap FID eval batch size to avoid OOM
 val_fid = evaluate_fid(Float32Wrapper(model_for_eval), flow_matching, fid_batch_size)
