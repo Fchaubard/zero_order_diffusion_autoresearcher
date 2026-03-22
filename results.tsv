@@ -537,3 +537,11 @@ n/a	56.2326	16.6	discard	b52 seed=58
 n/a	54.1341	16.6	discard	b52 seed=69
 n/a	56.7334	16.6	discard	b52 seed=80
 n/a	58.4957	16.6	discard	b52 torch curriculum denoising (auxiliary loss overhead)
+n/a	0.0000	0.0	crash	b53 monotonic x0 no extra fwd (z_H_inter scope)
+n/a	0.0000	0.0	crash	b53 monotonic penalty only (z_H_inter scope)
+n/a	56.7532	16.6	discard	b53 x0 recon final only (0.05 weight, neutral)
+n/a	55.3505	16.6	discard	b53 seed=61
+n/a	56.1183	16.6	discard	b53 seed=67
+n/a	338.6611	16.6	discard	b53 seed=71 (DIVERGED — bad init)
+n/a	56.4168	16.6	discard	b53 seed=73
+n/a	56.7943	16.6	discard	b53 seed=79
