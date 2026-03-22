@@ -865,3 +865,19 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: curriculum_denoise_analysis
+Description: Post-mortem analysis of the curriculum denoising experiments.
+Confidence: N/A
+Why: N/A
+Time of idea generation: 2026-03-22 20:00
+Status: Failed
+HPPs: Gaussian curriculum (sigma curriculum 0.05→...) and torch-based curriculum (noise+salt&pepper+brightness)
+Time of run start and end: 2026-03-22 16:00 - 2026-03-22 20:00
+Results vs. Baseline: Gaussian curriculum: 64.02 FID (vs 57 baseline, WORSE). Torch curriculum: 58.50 FID (within noise but toward worse end).
+wandb link: curriculum_denoising_recursion, torch_curriculum_denoise
+Analysis: The auxiliary denoising loss doubled forward passes per step (model runs for velocity AND for denoising), halving effective training steps from ~9000 to ~4500 in the 1-hour budget. The denoising signal wasn't valuable enough to compensate for the step reduction. The curriculum mechanism (increase noise when loss plateaus) worked correctly but the noise levels never got very high because the model spent most of its time on the velocity prediction task. The fundamental issue is that auxiliary losses are expensive in a time-constrained setting.
+Conclusion: Auxiliary denoising curriculum doesn't help within 1-hour budget. The idea would work better with longer training (where the step reduction matters less) or if the denoising REPLACED the velocity loss entirely. For the current setup, the vanilla L1+cosine+dual-t loss is optimal.
+Next Ideas to Try: A version where the recursion IS the denoiser (not auxiliary) — each H_cycle produces a progressively less noisy image. This requires restructuring the model's forward pass to output intermediate images, not velocities. But this would break compatibility with prepare.py's evaluation unless the final output is converted to velocity.
+---
