@@ -553,3 +553,11 @@ n/a	55.2346	16.6	discard	b54 class dropout 5%
 n/a	55.7831	16.6	discard	b54 seed=83
 n/a	57.4859	16.6	discard	b54 seed=89
 n/a	55.2114	16.6	discard	b54 seed=97
+n/a	56.4307	16.6	discard	b55 gradient scaling 1/sqrt(depth)
+n/a	55.0036	16.6	discard	b55 cycle-aware AdaLN
+n/a	57.5716	16.6	discard	b55 cos=1.5 with clamp
+n/a	55.2795	16.6	discard	b55 clamp 2x
+n/a	53.2486	16.6	discard	b55 anti-thetic dual-t (within noise)
+n/a	56.2351	16.6	discard	b55 seed=101
+n/a	59.3431	16.6	discard	b55 seed=103
+n/a	56.1475	16.6	discard	b55 seed=107
