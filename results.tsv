@@ -527,3 +527,13 @@ n/a	62.4167	16.6	discard	b51 GELU gate (SiLU is better)
 n/a	56.3469	16.6	discard	b51 seed=51
 n/a	54.0878	16.6	discard	b51 seed=53
 n/a	54.5023	16.6	discard	b51 seed=59
+n/a	64.0171	16.6	discard	b52 Gaussian curriculum denoising (auxiliary loss too expensive)
+n/a	0.0000	0.0	crash	b52 imgaug curriculum (numpy 2.x incompatible)
+n/a	0.0000	0.0	crash	b52 monotonic multistep (scope error)
+n/a	57.4062	16.6	discard	b52 seed=25
+n/a	55.5004	16.6	discard	b52 seed=36
+n/a	56.1515	16.6	discard	b52 seed=47
+n/a	56.2326	16.6	discard	b52 seed=58
+n/a	54.1341	16.6	discard	b52 seed=69
+n/a	56.7334	16.6	discard	b52 seed=80
+n/a	58.4957	16.6	discard	b52 torch curriculum denoising (auxiliary loss overhead)

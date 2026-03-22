@@ -817,3 +817,51 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+---
+idea_id: curriculum_denoising_recursion
+Description: Fundamentally change how the recursive model learns: instead of just predicting velocity at random timesteps, add a curriculum-based denoising objective. During training, corrupt the clean image with noise (starting very light, increasing as the model masters each level), then run the full recursive forward (all H_cycles and L_cycles), and penalize the OUTPUT z_H for not reconstructing the clean image. The noise level increases when training loss plateaus, creating a curriculum from easy (nearly clean) to hard (heavy noise). Each recursive cycle should improve the reconstruction — this is the "monotonic improvement" property. The model still predicts velocity for the ODE sampler (compatibility with prepare.py), but the auxiliary denoising curriculum teaches the shared weights to be effective iterative refiners at ALL noise levels. Implementation: (1) Add Gaussian noise with learnable sigma to clean images, (2) project z_H through output head at each H_cycle boundary, compute reconstruction loss, (3) increase sigma when loss plateaus. The velocity prediction loss (L1+cos) remains as the primary loss, with the denoising curriculum as auxiliary.
+Confidence: 7
+Why: This is inspired by the user's insight that the TRM recursion should naturally map to iterative denoising. The architecture was DESIGNED for iterative refinement (that's what TRM does for reasoning). The curriculum prevents catastrophic forgetting — the model first masters easy denoising, then progressively harder levels. The monotonic improvement property is achieved by training with multi-step loss (supervise each H_cycle's output). The key advantage: this teaches the shared weights to be good single-step denoisers, which directly improves the ODE sampling quality (each of the 50 Euler steps benefits from better single-step denoising). Data: our model currently achieves FID ~57 with recursive velocity prediction. Adding a denoising curriculum that teaches the RECURSION to refine progressively could unlock the architecture's full potential. Risk: the auxiliary loss might interfere with velocity prediction, and the curriculum tuning could be tricky.
+Time of idea generation: 2026-03-22 08:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: monotonic_multistep_denoising
+Description: Simpler version of the curriculum idea: during training, corrupt clean images with noise at the CURRENT flow matching timestep t, run the model's recursive forward, and extract intermediate outputs at each H_cycle boundary. Compute reconstruction loss at each boundary with INCREASING weight (cycle 1 gets weight 0.1, cycle 2 gets weight 1.0). This directly enforces the "each cycle improves" property. The loss is: sum over cycles of w_i * L1(output_head(z_H_at_cycle_i), clean_image). Combined with the velocity loss. This is different from our failed multi-step experiment (batch 1, FID 365) because: (1) we now have full BPTT, (2) we compute loss on z_H (not z_L), (3) we weight later cycles more, and (4) the model is much better trained.
+Confidence: 6
+Why: Our original multi-step loss experiment failed because it used truncated BPTT and computed intermediates from z_L. With full BPTT and z_H outputs, the gradient signal reaches all shared weights for all cycles. The increasing weight schedule enforces monotonic improvement — later cycles MUST be better. This directly implements the "each iteration only improves FID" property. Risk: the intermediate output head evaluations add compute, reducing total training steps.
+Time of idea generation: 2026-03-22 08:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
+
+---
+idea_id: imgaug_curriculum_denoise
+Description: Use imgaug library for rich, realistic image degradation in the curriculum denoising approach. Instead of simple Gaussian noise, use imgaug's augmenters to create realistic corruptions: (1) Start with light Gaussian blur + slight brightness change, (2) progress to heavier blur + noise + contrast changes, (3) eventually reach salt-and-pepper noise + heavy Gaussian noise + color jitter. The curriculum uses imgaug.augmenters with increasing severity controlled by a single "difficulty" parameter that ramps up as the model masters each level. The model must learn to reconstruct the clean image from these corruptions through its recursive cycles. This teaches the shared weights to be robust iterative refiners. The key insight from the user: we want theta such that 1 iteration does OK, and each additional iteration ONLY improves — never degrades.
+Confidence: 7
+Why: imgaug provides realistic, diverse corruptions that are much harder than simple Gaussian noise. This forces the model to learn robust features that generalize well. The curriculum prevents the model from being overwhelmed — it first masters easy corruptions before progressing to harder ones. The monotonic improvement property is enforced by supervising intermediate outputs. This is a novel training approach that leverages TRM's recursive architecture in a way that standard DiTs can't — the recursion IS the denoising.
+Time of idea generation: 2026-03-22 16:30
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+---
