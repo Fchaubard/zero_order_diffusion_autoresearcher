@@ -519,3 +519,11 @@ n/a	57.1007	16.6	discard	b50 seed=37
 n/a	56.3620	16.6	discard	b50 seed=41
 n/a	54.9729	16.6	discard	b50 seed=43
 n/a	55.7854	16.6	discard	b50 seed=47
+n/a	84.7896	16.6	discard	b51 window attention 8x8 (global context essential!)
+n/a	142.6483	16.6	discard	b51 causal attention (TERRIBLE for images)
+n/a	0.0000	0.0	crash	b51 MLP-only no attention (crash)
+n/a	66.1047	16.6	discard	b51 h3 with gradient checkpointing
+n/a	62.4167	16.6	discard	b51 GELU gate (SiLU is better)
+n/a	56.3469	16.6	discard	b51 seed=51
+n/a	54.0878	16.6	discard	b51 seed=53
+n/a	54.5023	16.6	discard	b51 seed=59
