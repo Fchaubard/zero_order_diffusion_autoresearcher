@@ -545,3 +545,11 @@ n/a	56.1183	16.6	discard	b53 seed=67
 n/a	338.6611	16.6	discard	b53 seed=71 (DIVERGED — bad init)
 n/a	56.4168	16.6	discard	b53 seed=73
 n/a	56.7943	16.6	discard	b53 seed=79
+n/a	66.5667	8.8	discard	b54 single-t batch512 (dual-t IS needed)
+n/a	62.7772	16.6	discard	b54 cos=0.8 (1.0 is optimal)
+n/a	62.8339	16.6	discard	b54 L2 cosine similarity (L1 better)
+n/a	55.5418	16.6	discard	b54 warmdown 40%
+n/a	55.2346	16.6	discard	b54 class dropout 5%
+n/a	55.7831	16.6	discard	b54 seed=83
+n/a	57.4859	16.6	discard	b54 seed=89
+n/a	55.2114	16.6	discard	b54 seed=97
