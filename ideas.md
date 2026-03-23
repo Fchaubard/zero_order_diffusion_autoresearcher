@@ -897,3 +897,259 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 ---
+
+-----------------------------------------------------
+idea_id: cfg_guidance_1p5
+Description: Classifier-free guidance (CFG) — the most impactful inference technique for class-conditional diffusion. During training, randomly drop class labels with probability p_uncond=0.1 (replacing class embedding with zeros). During inference, run both conditional and unconditional forward passes, combine as: pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond). Guidance scale 1.5. This is well-established (Ho & Salimans 2022) and routinely improves FID by 30-50%+.
+Confidence: 9
+Why: CFG is the single most reliable technique for improving FID in class-conditional diffusion models. We're leaving massive quality on the table by not using it. Every competitive diffusion model uses CFG. The training cost is minimal (just masking labels 10% of the time). Our model already supports class conditioning via label_embed — CFG is a natural extension.
+Time of idea generation: 2026-03-23 08:00
+Status: Success (improved from 55.0 baseline)
+HPPs: cfg_scale=1.5, p_uncond=0.1
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 51.33 vs 55.0 baseline, -3.7 FID improvement
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: CFG scale 1.5 improves FID from 55.0 to 51.33, but scale 2.0 is superior.
+Next Ideas to Try: Optimize around CFG scale 2.0 — try 1.75 and 2.25 for finer tuning.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_guidance_2p0
+Description: CFG with guidance scale 2.0, p_uncond=0.1. Slightly stronger guidance than 1.5.
+Confidence: 9
+Why: Scale 2.0 is often the sweet spot for 64x64 ImageNet in the literature. Testing to find optimal scale.
+Time of idea generation: 2026-03-23 08:00
+Status: Success (NEW ALL-TIME BEST!)
+HPPs: cfg_scale=2.0, p_uncond=0.1
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 48.34 vs 55.0 baseline, -6.7 FID improvement (12% improvement!)
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: BREAKTHROUGH — CFG scale 2.0 with p_uncond=0.1 gives FID 48.34, breaking the 22-batch plateau at FID 55. This is now the new optimal configuration.
+Next Ideas to Try: Fine-tune CFG scale (try 1.75, 2.25). Combine with other orthogonal improvements. Scale up model/training.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_guidance_3p0
+Description: CFG with guidance scale 3.0, p_uncond=0.1. Moderate guidance.
+Confidence: 8
+Why: Testing the guidance scale sweep. 3.0 is a common default in many implementations.
+Time of idea generation: 2026-03-23 08:00
+Status: Success (improved but not best)
+HPPs: cfg_scale=3.0, p_uncond=0.1
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 49.43 vs 55.0 baseline, -5.6 FID improvement
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: CFG scale 3.0 gives FID 49.43 — strong but slightly worse than scale 2.0 (48.34). Oversaturation starting.
+Next Ideas to Try: Scale 2.0 confirmed as optimal. Do not go higher.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_guidance_4p0
+Description: CFG with guidance scale 4.0, p_uncond=0.1. Stronger guidance, may oversaturate at 64x64.
+Confidence: 7
+Why: Testing upper range. Higher scales trade diversity for quality. May hurt FID if diversity drops too much.
+Time of idea generation: 2026-03-23 08:00
+Status: Success (improved but oversaturation starting)
+HPPs: cfg_scale=4.0, p_uncond=0.1
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 52.47 vs 55.0 baseline, -2.5 FID improvement
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: CFG scale 4.0 gives FID 52.47 — clear oversaturation degradation vs scale 2.0 (48.34). Too much guidance hurts diversity.
+Next Ideas to Try: Do not increase scale beyond 3.0. Focus on scale 2.0.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_guidance_2p0_pu02
+Description: CFG scale 2.0 with higher label dropout p_uncond=0.2. More unconditional training may help the model learn better unconditional denoising.
+Confidence: 7
+Why: p_uncond=0.2 was used in some implementations and can help when the unconditional model is weak. Trade-off: more label dropout means less conditional training signal.
+Time of idea generation: 2026-03-23 08:00
+Status: Success
+HPPs: cfg_scale=2.0, p_uncond=0.2
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 48.93 vs 55.0 baseline, -6.1 FID improvement
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: p_uncond=0.2 gives FID 48.93 — worse than p_uncond=0.1 (48.34). Higher dropout reduces conditional training signal.
+Next Ideas to Try: Stick with p_uncond=0.1.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: logit_normal_timestep
+Description: Replace uniform t~U(0,1) sampling with logit-normal: t = sigmoid(N(0,1)). This concentrates samples around t=0.5 where the denoising signal is richest, while still covering t near 0 and 1. Used in Stable Diffusion 3 (Esser et al. 2024) to improve training efficiency.
+Confidence: 7
+Why: Uniform sampling wastes training signal on very clean (t~1) and very noisy (t~0) inputs where the model has little to learn. Logit-normal focuses on intermediate timesteps. SD3 showed this matters.
+Time of idea generation: 2026-03-23 08:00
+Status: Failed (neutral - no improvement)
+HPPs: logit_normal_t=True, no CFG
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 54.99 vs 55.0 baseline, ~0 FID change
+wandb link:
+Analysis: Despite much lower training loss (0.234 vs 0.271), FID is identical to baseline. The lower loss is misleading — logit-normal just avoids sampling hard timesteps near t=0 and t=1, making the average loss lower without improving model quality.
+Conclusion: Logit-normal timestep sampling does not improve FID despite lowering training loss. The loss reduction is an artifact of avoiding hard timesteps.
+Next Ideas to Try: Logit-normal is not useful on its own. Only worth revisiting if combined with other changes.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_2p0_logit_normal
+Description: Combine CFG (scale=2.0, p_uncond=0.1) with logit-normal timestep sampling. Both are orthogonal improvements — CFG improves inference quality, logit-normal improves training efficiency.
+Confidence: 8
+Why: Combining the two most promising orthogonal improvements. If both work individually, their combination should be even better.
+Time of idea generation: 2026-03-23 08:00
+Status: Success
+HPPs: cfg_scale=2.0, p_uncond=0.1, logit_normal_t=True
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 48.38 vs 55.0 baseline, -6.6 FID improvement (logit-normal adds nothing to CFG)
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: CFG 2.0 + logit-normal gives FID 48.38 — virtually identical to CFG 2.0 alone (48.34). Logit-normal adds nothing on top of CFG.
+Next Ideas to Try: Drop logit-normal. Focus on CFG scale 2.0 with p_uncond=0.1 as the new baseline.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cfg_guidance_2p0_pu015
+Description: CFG scale 2.0 with p_uncond=0.15. Middle ground between 0.1 and 0.2.
+Confidence: 7
+Why: Fine-tuning the label dropout rate. 0.15 may be optimal.
+Time of idea generation: 2026-03-23 08:00
+Status: Success
+HPPs: cfg_scale=2.0, p_uncond=0.15
+Time of run start and end: 2026-03-23 08:02 - 2026-03-23 09:30
+Results vs. Baseline: 49.22 vs 55.0 baseline, -5.8 FID improvement
+wandb link:
+Analysis: CFG is a massive win — the biggest single improvement since the full BPTT discovery. Guidance scale 2.0 is optimal for our 13.6M recursive DiT on 64x64 ImageNet. Below 2.0 (1.5) under-guides, above 3.0 (4.0) starts oversaturating. p_uncond=0.1 is optimal — higher dropout (0.15, 0.2) hurts because it reduces conditional training signal. Training loss is identical across p_uncond values, so the difference is purely at inference.
+Conclusion: p_uncond=0.15 gives FID 49.22 — worse than p_uncond=0.1 (48.34). Confirms p_uncond=0.1 is optimal.
+Next Ideas to Try: Stick with p_uncond=0.1. Do not increase label dropout.
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: gqa_4kv_heads
+Description: Replace full multi-head attention (12 Q, 12 K, 12 V heads) with Grouped Query Attention (12 Q heads, 4 shared K/V head groups). This reduces redundant KV projections in the shared recursive block (which is applied 2*h_cycles*l_cycles times). Fewer KV parameters means less parameter saturation in the recursion, and the saved parameters can be repurposed or the model runs faster (more training steps in 1 hour). Based on GQA (Ainslie et al., 2023) which showed competitive quality with fewer parameters.
+Confidence: 7
+Why: The recursive shared-weight block is applied ~12 times per forward pass. Full KV heads wastes capacity since each recursion sees slightly different input but uses identical KV projections. GQA forces the model to share KV representations across heads, which acts as regularization for the recursive structure. Also makes each step faster = more training steps in 1 hour.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: mag_aware_cosine_loss
+Description: Modify the cosine similarity loss to be magnitude-aware. Currently, cosine similarity treats all velocity predictions equally regardless of their magnitude. But high-magnitude velocities (at intermediate timesteps) are more important for sample quality. Reweight: cos_loss = (1 - cos_sim) * (velocity_magnitude / max_velocity_in_batch). This focuses the directional loss on the timesteps that matter most.
+Confidence: 6
+Why: The current cosine loss is magnitude-blind. A prediction with tiny magnitude but perfect direction contributes the same as a prediction with large magnitude and perfect direction. But the large-magnitude predictions are more consequential during ODE integration. Weighting by magnitude makes the model prioritize getting high-signal timesteps right.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: input_skip_to_output
+Description: Add a gated skip connection from the input embedding directly to the final output projection, bypassing the full recursion. The idea is that in flow matching, the velocity prediction often closely resembles the input perturbation direction, especially at intermediate timesteps. A direct skip lets the model learn this "identity-like" component cheaply while the recursion handles the residual. Implementation: final_output = unpatchify(final_proj(z_H) + alpha * linear(input_emb)) where alpha is a learnable scalar initialized to 0.
+Confidence: 6
+Why: In diffusion models, the velocity field has strong correlation with the noisy input structure. Recursive processing can lose this direct signal through many iterations. A skip connection preserves it. DiT and other successful architectures use similar skip patterns. The gated initialization (alpha=0) ensures it starts as a no-op and only learns the skip if it helps.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: decoupled_mag_dir_head
+Description: Split the output head into two separate predictions: a unit direction (normalized velocity direction) and a scalar magnitude. The model predicts direction via the existing output head (then normalizes), and magnitude via a separate small MLP head (global average pooled features → scalar per sample). Final velocity = direction * magnitude. Loss: L1 on magnitude + cosine on direction. This decouples the two learning signals which the model currently conflates.
+Confidence: 5
+Why: Direction and magnitude are fundamentally different aspects of velocity prediction. Currently the model must simultaneously learn both from a single output, which creates gradient interference. Separating them gives each component its own learning signal. The cosine loss already measures direction; adding explicit magnitude supervision could help. Risk: added complexity may not pay off for a small model.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: patch_norm_before_pos
+Description: Add RMS normalization to patch embeddings before adding positional embedding. Currently, raw patch tokens have high variance from image content, which can dominate the positional signal. Normalizing patches first ensures the positional embedding has consistent relative magnitude, which helps attention patterns. Simple 1-line change in PatchEmbed.forward().
+Confidence: 5
+Why: Raw patch projections can have highly variable magnitudes depending on image content (bright vs dark patches). Normalization before positional embedding ensures position information is consistently injected, which helps with spatial coherence in generated images.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: rescaled_cfg_with_rescaled_uncond
+Description: Current rescaled CFG normalizes the guided output to match the conditional output's std. But the unconditional prediction itself may have different magnitude characteristics. Instead of rescaling the combined output, rescale the unconditional prediction to match the conditional prediction's magnitude BEFORE combining, then apply standard CFG. Formula: uncond_rescaled = uncond * (cond.std() / uncond.std()), then guided = uncond_rescaled + w * (cond - uncond_rescaled).
+Confidence: 5
+Why: The conditional and unconditional models may learn different output magnitude distributions. Mismatched magnitudes create artifacts when combining. Pre-rescaling the unconditional output ensures both start from the same scale, potentially allowing the guidance direction to be cleaner.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: triple_t_loss
+Description: Extend dual-t loss to triple-t: train with THREE different timesteps per image instead of two. Each forward pass samples t1, t2, t3 independently and the loss averages all three. This gives 50% more gradient information per training step at the cost of 50% more forward passes (slower steps, but richer learning signal per step). Whether the extra gradient information compensates for fewer total steps is the question.
+Confidence: 5
+Why: Dual-t was a clear win over single-t. Triple-t continues this trend — more timestep diversity per gradient step means the model sees a wider range of denoising conditions per update. The trade-off is fewer total steps in 1 hour. With the current 760ms per step (dual-t), triple-t would be ~1140ms per step. That's ~3160 steps vs ~4740 steps. The question is whether 3160 steps with 3x timestep diversity beats 4740 steps with 2x diversity.
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: learned_cfg_scale_per_t
+Description: Instead of a fixed CFG scale across all ODE timesteps, learn the optimal scale per timestep. Add a small MLP that maps the current ODE timestep t to a guidance scale: cfg_scale(t) = MLP(t). Train this MLP with a simple objective: minimize FID-proxy (or just use a fixed annealing profile learned from the ablations). Implementation: at inference, the model's forward() computes dynamic_cfg = base_cfg * sigmoid(mlp(t)), giving per-step adaptive guidance.
+Confidence: 4
+Why: Different ODE steps benefit from different guidance strengths. Early steps (structure) may need strong guidance, mid steps (detail) need moderate, late steps (refinement) need less. We showed linear/cosine dynamic CFG hurts, but those were hand-designed schedules. A learned schedule could find the right shape. Risk: the MLP adds parameters and complexity, may not have enough training signal (only trained during the 1-hour run).
+Time of idea generation: 2026-03-23 18:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------

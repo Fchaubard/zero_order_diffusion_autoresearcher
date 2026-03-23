@@ -12,15 +12,36 @@ To set up a new experiment, work with the user to:
    - `README.md` — repository context.
    - `prepare.py` — fixed constants, data prep, dataloader, evaluation. Do not modify.
    - `train.py` — the file you modify. TRM-inspired recursive model architecture (shared L-level blocks, z_H/z_L latent hierarchy, H/L cycles, SwiGLU MLP), optimizer (must be zero order, no use of full gradients ever, can use truncated BPTT only for baseline), training loop.
+   - `ideas.md` — This is a running log of ideas to try, or if they have been tried, what the results were, and learnings were. 
 4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains ImageNet data. If not, tell the human to run `uv run prepare.py`.
 5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+6. **Fill in ideas.md**: Create `ideas.md` if it doesnt already exist, if it does, read it and add some more ideas to it if you have net new ideas. The "idea template format" for each idea should be:
+   ---
+   idea_id: `<a reasonable name to use for the wandb run name to track which is the `wandb_run_name`>`
+   Description: `<a simple, no acronym description of the research direction, and if appropriate math equations, citations, data from previous runs, etc>`
+   Confidence: `<0 to 10 confidence score of idea working>`
+   Why: `<reason why we think this idea will work>`
+   Time of idea generation: `<time of when the idea was formed>`
+   Status: `<Not Implemented | Implemented, not tried | Running | Failed | Success | Unclear>`
+   HPPs: `<all HPPs and configs used in the run after the run has started>`
+   Time of run start and end: `<time of when this run started> - <time of when this run ended>`
+   Results vs. Baseline: `<the results after the run, e.g. 300 FID vs. 315 FID, +15 improvement!>`
+   wandb link: `<link to wandb run>`
+   Analysis: `<reasoning trace of deep analysis>`
+   Conclusion: `<final conclusion on this research direction>`
+   Next Ideas to Try: `<if this run sparks further ideas to research, say so here and then add new Idea_id blocks to this md file>`
+   ---
+   
+8. **Ensure wandb is logged in**: Ensure you are logged in to wandb via this api key: `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`
+9. **Confirm and go**: Confirm setup looks good.
 
-Once you get confirmation, kick off the experimentation. Once the experiment is complete, do analysis on the run and determine what you would advise to do next. If you need to build any one off script to do analysis, you must always put it in ./garbage/ so it doesnt muck up my current directory. Then provide an idea for the next experiment based on the results of the previous experiments. If you do not have any more ideas and you are lost, just say so. 
+Once you get confirmation, kick off the experimentation. 
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 1 hour** (wall clock training time, excluding startup/compilation). You launch it as: `uv run train.py` (truncated backprop through time baseline) or `uv run train.py --solver spsa` (zero-order SPSA) or otherwise if you want to implement your own solver. All hyperparameters are exposed as CLI flags — run `uv run train.py --help` for the full list.
+Each idea/experiment runs on a single GPU, never DDP across GPUs to reduce CPU contention. The training script runs for a **fixed time budget of 1 hour** (wall clock training time, excluding startup/compilation). You launch it as: `uv run train.py` (truncated backprop through time baseline) or `uv run train.py --solver spsa` (zero-order SPSA) or otherwise if you want to implement your own solver. All hyperparameters are exposed as CLI flags — run `uv run train.py --help` for the full list.
+
+You should only do experiments that are logged in `ideas.md`. You should grab the next highest confidence idea block, like a priority queue pop, that is marked with Status: `Not Implemented` | `Implemented, not tried`. Then you should implement it if it is not already implemented, and test it. Once it is tested, update the status to: `Implemented, not tried`. Once you have an available GPU, run the idea when you have an available GPU with `wandb_run_name` == `idea_id` so we can track it later. You should update the `Status`, `HPPs`, `wandb link`, and `Time of run start` once it is running properly without any crashes. If it does crash, fix the bug and then update the `Status`, `HPPs`, `wandb link`, and `Time of run start` again when the fix running without crashes.
 
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: loss equation, per layer loss and global loss, sum of loss per timestep or loss calculated only at end, MSE vs. cross entropy vs. FID direct loss vs. something else, type of zero order, hyperparameters, training loop, batch size, model size, the TRM-style recursion pattern, input injection strategy, gradient truncation policy, etc. You can play with T during training (the number of iters to produce the image aka the number of refinement steps). you can play with loss function (use CE, or SSIM, or FID directly, or focal loss, or hinge loss, or some RL loss, or whatever else you can dream up. you can play with the solver, you can use a zero order solvers like SPSA or cross entropy method or random search or other Evolutionary Search procedures. I would love to make this bio-logically plausible but not at the expense of more complexity! You can lean into bio-memetic ideas all you want like Ojas rule or Sangers rule but make it simple. You can play w using the sum of the losses at each step until T (multi_step_loss) vs. use only the last loss at step T (last_step_loss). Use multi_step_loss but weight each loss to be more loss the longer in T we go (linearly or exponentially?). You can adjust T throughout training on a sinsoidal schedule or something so we are changing the number of refinement steps over time starting with small and then growing and shrinking? not sure what that will do but its interesting. really be creative here. you can ALWAYS go to literature and lookup ideas from the past in theoretical neuroscience or deep learning, especially the ideas of schmidhuber, hinton, or alex graves. BUT you must keep simplicity in mind. 
@@ -28,7 +49,9 @@ Each experiment runs on a single GPU. The training script runs for a **fixed tim
 **What you CANNOT do:**
 - Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, flow matching, and training constants (time budget, image resolution, etc).
 - Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_fid` function in `prepare.py` is the ground truth metric. You also can not add more data. 
+- Modify the evaluation harness. The `evaluate_fid` function in `prepare.py` is the ground truth metric. You also can not add more data.
+- Be wasteful with wall-clock, gpu resources, or cpu resources with bad ideas/experiments. You should never add a poor, weak, or unsupported idea to `ideas.md`. 
+- You can not change the wandb project name, please always keep this constant so we can easily compare all runs.
 - You can not do boring dumb research. Simple stupid ideas like adding adam, playing w a lr warmup schedule, making it deeper or wider, play w the recursive architecture parameters (h_cycles, l_cycles, l_layers, n_embd), play with LR too much, adding dropout, etc. these are boring ideas and not research grade ideas. do NOT do boring research! I am not interested in hyperparam tuning. Dont do it! 
 - 
 **The goal is simple: get the lowest val_fid.** Since the time budget is fixed, you don't need to worry about training time — it's always 1 hour. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
@@ -71,11 +94,15 @@ Note that the script is configured to always stop after 1 hour wallclock, so dep
 grep "^val_fid:" run.log
 ```
 
-## Logging results
+## After each experiment completes
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+When an experiment has completed its run, you MUST do all of the following in order:
+1. first, log the results to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions) and update the appropriate idea block `ideas.md` which you can find by `grep wandb_run_name`, specifically `Time of End` which is when the run ended, `Results vs. Baseline`, switch `Status` from `Running` to `Failed` if it did not improve or `Success` if it did improve, or for some reason you can not tell, `Unclear` which should be the case if you are genuinely unsure if its just seed noise or something.  
+3. then, conduct deep analysis on the wandb run logs and appropriate data and to think about what happened, and what was different from what you expected to happen. If you need to build any one off script to conduct your deep analysis, you can and should, but must always put it in ./garbage/ so it doesnt muck up my current directory. 
+4. once you have completed your analysis, update the appropriate idea block `ideas.md`, specifically the `Analysis` section, which you can find by `grep wandb_run_name`.
+5. then, think **hard** about what you would advise to do next based on this analysis. You should look online for inspiration but you should not do boring research or plagiarize others. We are doing novel research here so you can take inspiration, but never copy. Your ideas should largely come through the errors observed in the previous run analysis. Once you have some ideas of what to try next, finalize every field in the appropriate idea block `ideas.md`, such as `Conclusion` and `Next Ideas to Try`, which you can find by `grep wandb_run_name`. Then write new idea blocks in `ideas.md` for all your ideas to try. If you do not have any net new ideas or you are just confused or lost, do not worry, just skip this step. If you do have ideas, append each at the bottom of `ideas.md` in the `ideas format` above with only if those ideas are not already in `ideas.md`. The idea blocks in `ideas.md` must always be sorted ascending by `Time of Idea generation` so its easy to follow along from top to bottom with the baseline run at the very top. If net new, then fill in: `ideas_id` which should be the wandb_run_id we will use when running, `Description` to describe the idea, `Confidence` which should be 0 if you are not sure at all about the idea and up to 10 if you are 100% confident it will work, `Why` which is a text description about why you think its going to work with fact pattern and reasoning trace describing why the confince score, and `Time of idea generation` which is the current time. BE VERY CAREFUL WHAT IDEAS TO SUGGEST. If the ideas have <3 confidence, dont add it. We need to be efficient with our experiments and not waste time and resources on dumb ideas that have little chance of working. Lets make sure we add **reasonable** ideas based on some data, insight or previous literature in a related field or task that has a good probability of working.
 
-The TSV has a header row and 5 columns:
+Just FYI, the TSV has a header row for `results.tsv` and 5 columns:
 
 ```
 commit	val_fid	memory_gb	status	description
@@ -104,20 +131,25 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_fid:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_fid improved (lower), you "advance" the branch, keeping the git commit
-9. If val_fid is equal or worse, you git reset back to where you started
+2. Review all of `ideas.md` for the highest confidence ideas that are unimplemented or untried so far and pick one to run.
+3. Tune `train.py` with the experimental idea by directly hacking the code.
+4. git commit
+5. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
+6. Read out the results: `grep "^val_fid:\|^peak_vram_mb:" run.log`
+7. Update `ideas.md` appropriately as described above.
+8. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+9. Update `ideas.md` appropriately as described above.
+10. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git) and update `ideas.md` appropriately as described above.
+11. If val_fid improved (lower), you "advance" the branch, keeping the git commit
+12. If val_fid is equal or worse, you git reset back to where you started
+13. Conduct analysis, write a conclusion and then think deeply about more ideas to try and update `ideas.md` appropriately as described above.
+14. go back to step 1.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
 **Timeout**: Each experiment should take 1 hour total (+ a few seconds for startup and eval overhead). If a run exceeds 1 hour and 10 minutes, kill it and treat it as a failure (discard and revert).
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv and update `ideas.md` appropriately, and move on.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — look at the data closely for inspiration, do mini tests if you need to really analyze something, read papers online, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period. If you need to build any one off script you must always put it in ./garbage/ so it doesnt muck up my current directory. 
 
