@@ -89,6 +89,12 @@ train_group.add_argument("--fail-threshold", type=float, default=100.0,
     help="Loss threshold for fast fail (abort if loss exceeds this)")
 train_group.add_argument("--num-workers", type=int, default=4,
     help="Dataloader workers (reduce to 1 when running 8 experiments in parallel)")
+train_group.add_argument("--p-uncond", type=float, default=0.0,
+    help="Probability of dropping class labels for classifier-free guidance training")
+train_group.add_argument("--cfg-scale", type=float, default=1.0,
+    help="Classifier-free guidance scale at inference (1.0 = no guidance)")
+train_group.add_argument("--logit-normal-t", action="store_true",
+    help="Use logit-normal timestep sampling instead of uniform")
 
 # Backprop-specific
 bp_group = parser.add_argument_group("tbptt-specific")
@@ -392,6 +398,30 @@ class RecursiveDiT(nn.Module):
             group["initial_lr"] = group["lr"]
         return optimizer
 
+    def _recurse(self, input_emb, c):
+        """Run recursive z_H/z_L computation and output projection."""
+        B, N = input_emb.shape[:2]
+        z_H = input_emb
+        z_L = self.z_L_init.expand(B, N, -1)
+
+        for _h in range(self.config.h_cycles - 1):
+            for _l in range(self.config.l_cycles):
+                z_L = self.l_level(z_L, z_H + input_emb, c)
+            z_H = self.l_level(z_H, z_L, c)
+
+        eval_mult = 2 if not self.training else 1
+        for _l in range(self.config.l_cycles * eval_mult):
+            z_L = self.l_level(z_L, z_H + input_emb, c)
+        z_H = self.l_level(z_H, z_L, c)
+        for _l in range(self.config.l_cycles * eval_mult):
+            z_H = self.l_level(z_H, z_L + input_emb, c)
+
+        shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
+        x = norm(z_H) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        x = self.final_proj(x)
+        x = self.unpatchify(x)
+        return x
+
     def forward(self, x, t, class_labels=None):
         """
         x: (B, C, H, W) noisy images
@@ -399,43 +429,34 @@ class RecursiveDiT(nn.Module):
         class_labels: (B,) class indices
         Returns: (B, C, H, W) predicted velocity
         """
-        # Patch embed + positional
         input_emb = self.patch_embed(x) + self.pos_embed
-
-        # Conditioning: time + class
         c = self.time_embed(t)
-        if class_labels is not None:
-            c = c + self.label_embed(class_labels)
+        B = input_emb.shape[0]
 
-        # Initialize z_H from input embedding (warm start — the noisy input IS the
-        # first guess), z_L from fixed buffer. This gives recursion a better starting point.
-        B, N = input_emb.shape[:2]
-        z_H = input_emb
-        z_L = self.z_L_init.expand(B, N, -1)
-
-        # Full BPTT: backprop through ALL H_cycles (no truncation — critical for diffusion!)
-        for _h in range(self.config.h_cycles - 1):
-            for _l in range(self.config.l_cycles):
-                z_L = self.l_level(z_L, z_H + input_emb, c)
-            z_H = self.l_level(z_H, z_L, c)
-
-        # Last H_cycle + symmetric refinement
-        # At eval: 2x L-cycles for more refinement per ODE step (test-time compute scaling)
-        eval_mult = 2 if not self.training else 1
-        for _l in range(self.config.l_cycles * eval_mult):
-            z_L = self.l_level(z_L, z_H + input_emb, c)
-        z_H = self.l_level(z_H, z_L, c)
-        # Reverse pass
-        for _l in range(self.config.l_cycles * eval_mult):
-            z_H = self.l_level(z_H, z_L + input_emb, c)
-
-        # Output projection with AdaLN
-        shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
-        x = norm(z_H) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-        x = self.final_proj(x)
-        x = self.unpatchify(x)
-
-        return x
+        if self.training:
+            # Training: randomly drop class labels for classifier-free guidance
+            if class_labels is not None:
+                label_emb = self.label_embed(class_labels)
+                if self.p_uncond > 0:
+                    drop_mask = torch.rand(B, device=c.device) < self.p_uncond
+                    label_emb = label_emb * (~drop_mask).float().unsqueeze(-1)
+                c = c + label_emb
+            return self._recurse(input_emb, c)
+        else:
+            # Inference: apply classifier-free guidance
+            if class_labels is not None and self.cfg_scale > 1.0:
+                c_cond = c + self.label_embed(class_labels)
+                c_uncond = c  # time-only conditioning
+                # Batch conditional+unconditional together for GPU efficiency
+                input_emb_2 = input_emb.repeat(2, 1, 1)
+                c_2 = torch.cat([c_uncond, c_cond], dim=0)
+                out_2 = self._recurse(input_emb_2, c_2)
+                out_uncond, out_cond = out_2.chunk(2, dim=0)
+                return out_uncond + self.cfg_scale * (out_cond - out_uncond)
+            else:
+                if class_labels is not None:
+                    c = c + self.label_embed(class_labels)
+                return self._recurse(input_emb, c)
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
@@ -917,6 +938,8 @@ wandb.init(
     name=run_name,
     config={**asdict(config), "solver": args.solver, "lr": args.lr,
             "total_batch_size": args.total_batch_size, "time_budget": args.time_budget,
+            "p_uncond": args.p_uncond, "cfg_scale": args.cfg_scale,
+            "logit_normal_t": args.logit_normal_t,
             **({k: getattr(args, k) for k in ["n_perts", "denoising_steps", "epsilon",
                "use_curvature", "search_strategy"] if hasattr(args, k)} if args.solver == "spsa" else {})},
 )
@@ -925,6 +948,8 @@ with torch.device("meta"):
     model = RecursiveDiT(config)
 model.to_empty(device=device)
 model.init_weights()
+model.p_uncond = args.p_uncond
+model.cfg_scale = args.cfg_scale
 
 # EMA model for evaluation (Polyak averaging)
 import copy
@@ -1070,9 +1095,11 @@ while True:
         for micro_step in range(grad_accum_steps):
             with autocast_ctx:
                 batch_size = x.shape[0]
-                t = torch.rand(batch_size, device=x.device)
+                if args.logit_normal_t:
+                    t = torch.sigmoid(torch.randn(batch_size, device=x.device))
+                else:
+                    t = torch.rand(batch_size, device=x.device)
                 x_t, velocity = flow_matching.forward_sample(x, t)
-                # (hflip removed — not needed at optimal LR+beta2)
                 pred = model(x_t, t, class_labels=y)
                 # Clamp prediction magnitude to prevent outliers
                 with torch.no_grad():
@@ -1081,7 +1108,10 @@ while True:
                 scale = torch.clamp(max_mag / (pred_mag + 1e-8), max=1.0)
                 pred = pred * scale
                 # Dual-t: second forward with different timestep for richer gradient
-                t2 = torch.rand(batch_size, device=x.device)
+                if args.logit_normal_t:
+                    t2 = torch.sigmoid(torch.randn(batch_size, device=x.device))
+                else:
+                    t2 = torch.rand(batch_size, device=x.device)
                 x_t2, vel2 = flow_matching.forward_sample(x, t2)
                 pred2 = model(x_t2, t2, class_labels=y)
                 with torch.no_grad():
