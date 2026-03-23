@@ -593,3 +593,11 @@ n/a	55.2121	16.6	discard	b59 learnable z_L (neutral)
 n/a	54.2717	16.6	discard	b59 seed=173
 n/a	56.3512	16.6	discard	b59 seed=179
 n/a	53.5628	16.6	discard	b59 seed=181 (lucky)
+n/a	56.1170	16.6	discard	b60 seed=191
+n/a	54.1257	16.6	discard	b60 seed=193
+n/a	53.6574	16.6	discard	b60 seed=197
+n/a	55.1922	16.6	discard	b60 seed=199
+n/a	57.0086	16.6	discard	b60 seed=211
+n/a	55.1352	16.6	discard	b60 seed=223
+n/a	55.4340	16.6	discard	b60 z_L from input_emb seed=0
+n/a	55.3080	16.6	discard	b60 z_L from input_emb seed=1
