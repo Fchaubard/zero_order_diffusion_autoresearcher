@@ -15,24 +15,25 @@ To set up a new experiment, work with the user to:
    - `ideas.md` — This is a running log of ideas to try, or if they have been tried, what the results were, and learnings were. 
 4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains ImageNet data. If not, tell the human to run `uv run prepare.py`.
 5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Fill in `ideas.md`**: Create `ideas.md` if it doesnt already exist, if it does, read it and add some more ideas to it if you have net new ideas. The "idea template format" for each idea should be:
-   ---
-   idea_id: `<a reasonable name to use for the wandb run name to track which is the `wandb_run_name`>`
-   Description: `<a simple, no acronym description of the research direction, and if appropriate math equations, citations, data from previous runs, etc>`
-   Confidence: `<0 to 10 confidence score of idea working>`
-   Why: `<reason why we think this idea will work>`
-   Time of idea generation: `<time of when the idea was formed>`
-   Status: `<Not Implemented | Implemented, not tried | Running | Failed | Success | Unclear>`
-   HPPs: `<all HPPs and configs used in the run after the run has started>`
-   Time of run start and end: `<time of when this run started> - <time of when this run ended>`
-   Results vs. Baseline: `<the results after the run, e.g. 300 FID vs. 315 FID, +15 improvement!>`
-   wandb link: `<link to wandb run>`
-   Analysis: `<reasoning trace of deep analysis>`
-   Conclusion: `<final conclusion on this research direction>`
-   Next Ideas to Try: `<if this run sparks further ideas to research, say so here and then add new Idea_id blocks to this md file>`
-   ---
+6. **Fill in ideas.md**: Create `ideas.md` if it doesnt already exist, if it does, read it and add some more ideas to it if you have net new ideas. The `idea template format` for each idea should be:
+   #
+   - idea_id: `<a reasonable name to use for the wandb run name to track which is the wandb_run_name>`
+   - Description: `<a simple, no acronym description of the research direction, and if appropriate math equations, citations, data from previous runs, etc>`
+   - Confidence: `<0 to 10 confidence score of idea working>`
+   - Why: `<reason why we think this idea will work>`
+   - Time of idea generation: `<time of when the idea was formed>`
+   - Status: `<⚪ Not Implemented |🔵 Implemented, not tried | 🟡 Running |🔴 Failed |🟢 Success |🟣 Unclear>`
+   - HPPs: `<all HPPs and configs used in the run after the run has started>`
+   - Time of run start and end: `<time of when this run started> - <time of when this run ended>`
+   - Results vs. Baseline: `<the results after the run, e.g. 300 FID vs. 315 FID, +15 improvement!>`
+   - wandb link: `<link to wandb run>`
+   - Analysis: `<reasoning trace of deep analysis>`
+   - Conclusion: `<final conclusion on this research direction>`
+   - Next Ideas to Try: `<if this run sparks further ideas to research, say so here and then add new Idea_id blocks to this md file>`
+   #
    
-8. **Ensure wandb is logged in**: Ensure you are logged in to wandb via this api key: `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`
+   
+8. **Ensure wandb is logged in**: Ensure you are logged in to wandb via this api key: `<wandb_api_key>`
 9. **Confirm and go**: Confirm setup looks good.
 
 Once you get confirmation, kick off the experimentation. 
