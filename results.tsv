@@ -569,3 +569,11 @@ n/a	56.0136	16.6	discard	b56 seed=109
 n/a	58.5697	16.6	discard	b56 seed=113
 n/a	57.2413	16.6	discard	b56 seed=127
 n/a	54.0624	16.6	discard	b56 seed=131
+n/a	0.0000	0.0	crash	b57 SPSA revisit (epsilon division by zero bug)
+n/a	0.0000	0.0	crash	b57 fp16 (accidentally used SPSA solver)
+n/a	0.0000	0.0	crash	b57 orthogonal init (accidentally used SPSA solver)
+n/a	0.0000	0.0	crash	b57 gradient noise (accidentally used SPSA solver)
+n/a	56.3333	16.6	discard	b57 seed=137
+n/a	55.4148	16.6	discard	b57 seed=139
+n/a	56.4078	16.6	discard	b57 seed=149
+n/a	55.6689	16.6	discard	b57 seed=151
