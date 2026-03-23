@@ -128,12 +128,24 @@ spsa_group.add_argument("--curvature-ema", type=float, default=0.0,
          "0=disabled (per-perturbation curvature). E.g., 0.9 smooths curvature with "
          "90%% weight on history. Reduces curvature noise with tied lr==eps.")
 spsa_group.add_argument("--curvature-mode", type=str, default="per-pert",
-    choices=["per-pert", "step-median", "sophia-clip"],
+    choices=["per-pert", "step-median", "sophia-clip", "quality-filter", "curv-weight"],
     help="How curvature is applied. per-pert: each perturbation uses its own curvature (default). "
          "step-median: collect all n_perts curvature estimates then use robust median for all. "
-         "sophia-clip: don't divide by curvature, instead clip gradient magnitude to rho/curvature.")
+         "sophia-clip: don't divide by curvature, instead clip gradient magnitude to rho/curvature. "
+         "quality-filter: use curvature as gradient QUALITY signal — keep only lowest-curvature "
+         "perturbations (most trustworthy gradients), discard high-curvature ones. "
+         "Uses --curvature-filter-keep to set fraction to keep (default 0.5). "
+         "curv-weight: soft reliability weighting — each perturbation weighted by 1/(1+curv/median_curv). "
+         "Low curvature = locally linear = trustworthy gradient, gets higher weight. "
+         "Unlike quality-filter, all perturbations contribute (no hard cutoff).")
+spsa_group.add_argument("--curvature-filter-keep", type=float, default=0.5,
+    help="Fraction of perturbations to keep in quality-filter mode (0.5 = keep 50%% lowest curvature)")
 spsa_group.add_argument("--sophia-rho", type=float, default=0.05,
     help="Clipping threshold for sophia-clip curvature mode. Larger=bigger allowed steps.")
+spsa_group.add_argument("--importance-weight-alpha", type=float, default=0.0,
+    help="Importance weighting of perturbations. Each perturbation weighted by |L+-L-|^alpha. "
+         "Higher alpha gives more weight to informative perturbations (large loss differences). "
+         "0=disabled (default). 0.5=gentle reweighting. 1.0=aggressive.")
 spsa_group.add_argument("--memory-efficient", action="store_true",
     help="Memory efficient mode: regenerate perturbation directions via RNG")
 spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
@@ -461,6 +473,10 @@ spsa_group.add_argument("--ce-subsample", type=int, default=0,
 spsa_group.add_argument("--label-smoothing", type=float, default=0.0,
     help="Label smoothing for CE loss. 0.1 = 90%% on correct class, 10%%/999 on others. "
          "Smooths the loss landscape, potentially giving more reliable SPSA gradients.")
+spsa_group.add_argument("--clf-noise-sigma", type=float, default=0.0,
+    help="Gaussian noise sigma injected into generated images before InceptionV3 classification. "
+         "Smooths classification boundary → smoother loss landscape → better SPSA gradients. "
+         "E.g., 0.01 = small noise, 0.05 = moderate. 0=disabled (default).")
 spsa_group.add_argument("--focal-gamma", type=float, default=0.0,
     help="Focal loss gamma. When > 0, uses focal loss -(1-p)^gamma * log(p) instead of CE. "
          "Down-weights easy examples, focuses gradient signal on hard examples. "
@@ -516,8 +532,29 @@ spsa_group.add_argument("--lora-alpha", type=float, default=1.0,
     help="LoRA scaling factor: output = W_frozen @ x + (alpha/rank) * A @ B @ x. "
          "Higher alpha = LoRA has more influence. Default 1.0 = standard scaling.")
 
+spsa_group.add_argument("--grad-subspace-k", type=int, default=0,
+    help="Gradient subspace projection: accumulate last K gradient vectors, compute SVD, "
+         "project current gradient onto top-r subspace before applying update. "
+         "Removes noise in dimensions orthogonal to the historical optimization trajectory. "
+         "0=disabled. E.g., 15 = use last 15 gradients for subspace estimation. "
+         "Requires --grad-subspace-rank to set the projection rank.")
+spsa_group.add_argument("--grad-subspace-rank", type=int, default=0,
+    help="Rank of gradient subspace projection (number of SVD components to keep). "
+         "0=use all K components (full history rank). E.g., 10 = keep top-10 gradient directions.")
+spsa_group.add_argument("--grad-subspace-alpha", type=float, default=1.0,
+    help="Blend factor for gradient subspace projection. 1.0=full projection (default), "
+         "0.0=no projection (original gradient), 0.5=50/50 blend. "
+         "Lower values keep more of the noisy original signal but reduce subspace bias.")
+spsa_group.add_argument("--ode-method", type=str, default="euler",
+    choices=["euler", "heun"],
+    help="ODE integration method for autoreg_ce. euler=standard, heun=2nd-order (2x model evals per step, "
+         "negligible cost since InceptionV3 dominates). Better ODE accuracy → better generated images.")
 spsa_group.add_argument("--save-model", type=str, default=None,
     help="Save final model state_dict to this path after training (for model soup)")
+spsa_group.add_argument("--clf-chunk-size", type=int, default=0,
+    help="Chunk InceptionV3 inference to avoid OOM at large batch sizes. "
+         "0=no chunking (process full batch at once). E.g., 500 = process 500 images at a time. "
+         "Enables batch sizes >2000 without InceptionV3 OOM.")
 spsa_group.add_argument("--clf-fp16", action="store_true",
     help="Convert classifier model to permanent fp16 (instead of fp32 + autocast). "
          "Saves fp32→fp16 cast overhead on every forward pass. Risk: minor numerical differences.")
@@ -1124,6 +1161,11 @@ class SPSATrainer:
         self.sign_consensus = 0  # set from args after construction
         self._sign_history = None  # ring buffer of gradient signs
         self.lr_layer_scale = False  # set from args after construction
+        self.grad_subspace_k = 0  # set from args: gradient subspace history length
+        self.grad_subspace_rank = 0  # set from args: SVD rank for projection
+        self.grad_subspace_alpha = 1.0  # blend: 1.0=full projection, 0.0=original
+        self._grad_history = []  # buffer of historical gradient vectors
+        self._grad_subspace = None  # cached SVD right singular vectors (r, d)
         self.grad_verify = False  # set from args after construction
         self.grad_verify_threshold = 0.05  # revert if loss increases by more than this fraction
         self._verify_revert_count = 0
@@ -1237,9 +1279,11 @@ class SPSATrainer:
         self.kalman_loss = False  # set from args after construction
         # Curvature EMA state (smooths curvature estimates across perturbations and steps)
         self.curvature_ema = 0.0  # set from args after construction
-        self.curvature_mode = "per-pert"  # per-pert, step-median, sophia-clip
+        self.curvature_mode = "per-pert"  # per-pert, step-median, sophia-clip, quality-filter, curv-weight
         self.sophia_rho = 0.05  # clipping threshold for sophia-clip mode
+        self.curvature_filter_keep = 0.5  # fraction to keep for quality-filter mode
         self._curv_ema_val = None  # running EMA of curvature
+        self.importance_weight_alpha = 0.0  # importance weighting exponent (0=disabled)
 
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
@@ -1488,8 +1532,8 @@ class SPSATrainer:
             if self.grad_clip > 0:
                 grad_coeff = max(-self.grad_clip, min(self.grad_clip, grad_coeff))
 
-            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0:
-                # Deferred accumulation: store coefficients for median clipping, top-K, winsorization, MoM, or split consensus
+            if self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0 or (self.use_curvature and self.curvature_mode in ("quality-filter", "curv-weight")):
+                # Deferred accumulation: store coefficients for median clipping, top-K, winsorization, MoM, split consensus, quality-filter, or curv-weight
                 if not hasattr(self, '_deferred_coeffs'):
                     self._deferred_coeffs = []
                 self._deferred_coeffs.append(grad_coeff)
@@ -1523,7 +1567,7 @@ class SPSATrainer:
             self._elite_seeds = [seed for _, seed in _pert_losses[:self.elite_perts]]
 
         # Deferred gradient accumulation: replay perturbations with processed coefficients
-        _use_deferred = (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0)
+        _use_deferred = (self.median_clip > 0 or self.topk > 0 or self.winsorize_pct > 0 or self.split_consensus or self.mom_groups > 0 or (self.use_curvature and self.curvature_mode in ("quality-filter", "curv-weight")))
         if _use_deferred and hasattr(self, '_deferred_coeffs') and self._deferred_coeffs:
             coeffs = self._deferred_coeffs
 
@@ -1554,7 +1598,18 @@ class SPSATrainer:
                 hi_clip = sorted_coeffs[n - 1 - k]
                 coeffs = [max(lo_clip, min(hi_clip, c)) for c in coeffs]
 
-            # Apply deferred curvature scaling (step-median or sophia-clip modes)
+            # Importance weighting: amplify informative perturbations (large |L+-L-|)
+            if self.importance_weight_alpha > 0 and len(coeffs) > 1:
+                signals = [abs(c) for c in coeffs]
+                signal_mean = sum(signals) / len(signals) + 1e-10
+                alpha = self.importance_weight_alpha
+                weights = [(s / signal_mean) ** alpha for s in signals]
+                total_w = sum(weights)
+                if total_w > 0:
+                    scale = len(coeffs) / total_w
+                    coeffs = [c * w * scale for c, w in zip(coeffs, weights)]
+
+            # Apply deferred curvature scaling (step-median, sophia-clip, or quality-filter modes)
             if self.use_curvature and self.curvature_mode != "per-pert" and _all_curvatures:
                 import statistics as _stats
                 median_curv = _stats.median(_all_curvatures)
@@ -1565,6 +1620,33 @@ class SPSATrainer:
                     # Clip each coefficient to [-rho/curvature, rho/curvature]
                     clip_val = self.sophia_rho / median_curv
                     coeffs = [max(-clip_val, min(clip_val, c)) for c in coeffs]
+                elif self.curvature_mode == "quality-filter":
+                    # Quality filter: low curvature = locally linear = trustworthy gradient
+                    # Keep only the lowest-curvature perturbations, zero out the rest
+                    keep_frac = self.curvature_filter_keep
+                    n_keep = max(1, int(len(_all_curvatures) * keep_frac))
+                    sorted_curvs = sorted(_all_curvatures)
+                    curv_threshold = sorted_curvs[min(n_keep, len(sorted_curvs)) - 1]
+                    n_zeroed = 0
+                    for ci, curv in enumerate(_all_curvatures):
+                        if curv > curv_threshold:
+                            coeffs[ci] = 0.0
+                            n_zeroed += 1
+                    # Rescale surviving coefficients to correct gradient magnitude
+                    n_surviving = len(coeffs) - n_zeroed
+                    if n_surviving > 0 and n_surviving < len(coeffs):
+                        scale = len(coeffs) / n_surviving
+                        coeffs = [c * scale if c != 0.0 else 0.0 for c in coeffs]
+                elif self.curvature_mode == "curv-weight":
+                    # Soft reliability weighting: weight each perturbation by 1/(1 + curv/median_curv)
+                    # Low curvature = locally linear = trustworthy, gets higher weight
+                    # All perturbations contribute (no hard cutoff like quality-filter)
+                    weights = [1.0 / (1.0 + curv / median_curv) for curv in _all_curvatures]
+                    total_w = sum(weights)
+                    if total_w > 0:
+                        # Normalize weights so they sum to len(coeffs) (preserve gradient magnitude)
+                        scale = len(coeffs) / total_w
+                        coeffs = [c * w * scale for c, w in zip(coeffs, weights)]
 
             # Median-of-means: split perts into K groups, mean per group, median across groups
             # Each pert keeps its original coefficient but scaled by median-of-means / plain-mean
@@ -1737,6 +1819,50 @@ class SPSATrainer:
                     self._kalman_P[i] = (1 - K) * P_pred
                     # Replace gradient with filtered version
                     self.grads[i] = self._kalman_state[i].clone()
+
+        # Gradient subspace projection: clean gradient by projecting onto historical subspace
+        if self.grad_subspace_k > 0 and self.grads is not None:
+            # Concatenate all parameter gradients into a single vector
+            full_grad = torch.cat([g.float() for g in self.grads])
+            # Store in history buffer
+            self._grad_history.append(full_grad.detach().clone())
+            if len(self._grad_history) > self.grad_subspace_k:
+                self._grad_history = self._grad_history[-self.grad_subspace_k:]
+            # Once we have K gradients, compute subspace and project
+            if len(self._grad_history) >= self.grad_subspace_k:
+                # Recompute SVD every step (cheap: K is small)
+                history = torch.stack(self._grad_history)  # (K, d)
+                # Economy SVD: U (K,K), S (K), Vh (K, d)
+                _, S, Vh = torch.linalg.svd(history, full_matrices=False)
+                r = self.grad_subspace_rank if self.grad_subspace_rank > 0 else len(S)
+                r = min(r, len(S))
+                V_r = Vh[:r]  # (r, d) — top-r right singular vectors
+                # Project: G_proj = V_r^T @ (V_r @ G)
+                coords = V_r @ full_grad  # (r,)
+                proj = V_r.T @ coords  # (d,)
+                # Diagnostic: fraction of gradient norm preserved by projection
+                raw_norm = full_grad.norm().item()
+                proj_norm = proj.norm().item()
+                preserve_frac = proj_norm / (raw_norm + 1e-10)
+                # Log occasionally (every 10 steps)
+                if not hasattr(self, '_sub_step_count'):
+                    self._sub_step_count = 0
+                self._sub_step_count += 1
+                if self._sub_step_count <= 3 or self._sub_step_count % 10 == 0:
+                    sv_ratio = S[0].item() / (S[-1].item() + 1e-10)
+                    print(f"  [GradSub] rank={r}, preserve={preserve_frac:.3f}, SV_ratio={sv_ratio:.1f}")
+                # Blend projected with original gradient
+                alpha = self.grad_subspace_alpha
+                if alpha < 1.0:
+                    blended = alpha * proj + (1.0 - alpha) * full_grad
+                else:
+                    blended = proj
+                # Split back into per-parameter-group tensors
+                offset = 0
+                for i, info in enumerate(self.param_info):
+                    n = info['numel']
+                    self.grads[i] = blended[offset:offset + n].to(self.grads[i].dtype)
+                    offset += n
 
         # Apply update
         if self.use_adam and self.m is not None:
@@ -2392,19 +2518,31 @@ else:
     if args.group_adaptive_lr:
         trainer.group_adaptive_lr = True
         print(f"  Group-adaptive LR: per-group LR scale based on gradient consistency")
+    if args.grad_subspace_k > 0:
+        trainer.grad_subspace_k = args.grad_subspace_k
+        trainer.grad_subspace_rank = args.grad_subspace_rank
+        trainer.grad_subspace_alpha = getattr(args, 'grad_subspace_alpha', 1.0)
+        print(f"  Gradient subspace: K={args.grad_subspace_k} history, rank={args.grad_subspace_rank or 'all'}, alpha={trainer.grad_subspace_alpha}")
     if args.kalman_grad:
         trainer.kalman_grad = True
         print(f"  Kalman gradient filter: adaptive noise-aware gradient smoothing")
     if args.kalman_loss:
         trainer.kalman_loss = True
         print(f"  Kalman loss filter: smooth per-perturbation loss differences")
+    if getattr(args, 'importance_weight_alpha', 0.0) > 0:
+        trainer.importance_weight_alpha = args.importance_weight_alpha
+        print(f"  Importance weighting: alpha={args.importance_weight_alpha:.2f}")
     if args.curvature_ema > 0:
         trainer.curvature_ema = args.curvature_ema
         print(f"  Curvature EMA: smoothing={args.curvature_ema:.2f}")
     if hasattr(args, 'curvature_mode') and args.curvature_mode != "per-pert":
         trainer.curvature_mode = args.curvature_mode
         trainer.sophia_rho = args.sophia_rho
-        print(f"  Curvature mode: {args.curvature_mode}" + (f" (rho={args.sophia_rho})" if args.curvature_mode == "sophia-clip" else ""))
+        if args.curvature_mode == "quality-filter":
+            trainer.curvature_filter_keep = args.curvature_filter_keep
+            print(f"  Curvature mode: quality-filter (keep={args.curvature_filter_keep:.0%} lowest-curvature perturbations)")
+        else:
+            print(f"  Curvature mode: {args.curvature_mode}" + (f" (rho={args.sophia_rho})" if args.curvature_mode == "sophia-clip" else ""))
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -4439,11 +4577,20 @@ if args.solver == "spsa":
                     noise = torch.randn(x_b.shape, device=dev, dtype=x_b.dtype, generator=gen)
                     x_gen = noise.clone()
                 dt = 1.0 / T
+                _ode_method = getattr(args, 'ode_method', 'euler')
                 for i in range(T):
                     t_val = i / T
                     t_tensor = torch.full((x_b.shape[0],), t_val, device=dev)
                     velocity = model(x_gen, t_tensor, class_labels=y_b)
-                    x_gen = x_gen + velocity * dt
+                    if _ode_method == 'heun':
+                        # Heun's method: predictor-corrector (2nd order)
+                        # 2x model evals per step but negligible cost vs InceptionV3
+                        x_pred = x_gen + velocity * dt
+                        t_end = torch.full((x_b.shape[0],), min(t_val + dt, 1.0), device=dev)
+                        v2 = model(x_pred, t_end, class_labels=y_b)
+                        x_gen = x_gen + (velocity + v2) * (dt / 2)
+                    else:
+                        x_gen = x_gen + velocity * dt
                 clf_model, clf_transform = spsa_classifier[0]
                 # Random horizontal flip augmentation
                 if getattr(args, 'ce_flip_aug', False):
@@ -4459,13 +4606,30 @@ if args.solver == "spsa":
                     sub_gen = torch.Generator(device=dev)
                     sub_gen.manual_seed(noise_seed[0] + batch_idx + 999)
                     perm = torch.randperm(x_gen_aug.shape[0], generator=sub_gen, device=dev)[:ce_sub]
-                    x_clf = clf_transform(x_gen_aug[perm].float().clamp(0, 1))
+                    _clf_input = x_gen_aug[perm].float().clamp(0, 1)
                     y_sub = y_b[perm]
                 else:
-                    x_clf = clf_transform(x_gen_aug.float().clamp(0, 1))
+                    _clf_input = x_gen_aug.float().clamp(0, 1)
                     y_sub = y_b
+                _clf_sigma = getattr(args, 'clf_noise_sigma', 0.0)
+                if _clf_sigma > 0:
+                    # Deterministic noise: same seed for +/- perturbations so smoothing is consistent
+                    _clf_gen = torch.Generator(device=_clf_input.device)
+                    _clf_gen.manual_seed(noise_seed[0] + batch_idx + 7777)
+                    _clf_noise = torch.randn(_clf_input.shape, device=_clf_input.device, dtype=_clf_input.dtype, generator=_clf_gen)
+                    _clf_input = (_clf_input + _clf_sigma * _clf_noise).clamp(0, 1)
+                x_clf = clf_transform(_clf_input)
                 with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-                    logits = clf_model(x_clf.to(memory_format=torch.channels_last))
+                    # Chunk InceptionV3 to avoid OOM at large batch sizes
+                    _clf_chunk = getattr(args, 'clf_chunk_size', 0)
+                    if _clf_chunk > 0 and x_clf.shape[0] > _clf_chunk:
+                        _logit_chunks = []
+                        for _ci in range(0, x_clf.shape[0], _clf_chunk):
+                            _chunk = x_clf[_ci:_ci + _clf_chunk].to(memory_format=torch.channels_last)
+                            _logit_chunks.append(clf_model(_chunk))
+                        logits = torch.cat(_logit_chunks, dim=0)
+                    else:
+                        logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                 ce_temp = getattr(args, 'ce_temperature', 1.0)
                 if ce_temp != 1.0:
                     logits = logits / ce_temp
@@ -4504,7 +4668,14 @@ if args.solver == "spsa":
                     velocity = model(x_gen, t_tensor, class_labels=y_b)
                     x_gen = x_gen + velocity * dt
                     # Classify at this step
-                    x_clf = clf_transform(x_gen.float().clamp(0, 1))
+                    _clf_input_prog = x_gen.float().clamp(0, 1)
+                    _clf_sigma_prog = getattr(args, 'clf_noise_sigma', 0.0)
+                    if _clf_sigma_prog > 0:
+                        _clf_gen_prog = torch.Generator(device=_clf_input_prog.device)
+                        _clf_gen_prog.manual_seed(noise_seed[0] + i * 1000 + 7777)
+                        _clf_noise_prog = torch.randn(_clf_input_prog.shape, device=_clf_input_prog.device, dtype=_clf_input_prog.dtype, generator=_clf_gen_prog)
+                        _clf_input_prog = (_clf_input_prog + _clf_sigma_prog * _clf_noise_prog).clamp(0, 1)
+                    x_clf = clf_transform(_clf_input_prog)
                     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
                         logits = clf_model(x_clf.to(memory_format=torch.channels_last))
                     if ce_temp != 1.0:
@@ -5200,6 +5371,17 @@ while True:
                     trainer.sparse_pert = args.sparse_pert
                 if args.mom_groups > 0:
                     trainer.mom_groups = args.mom_groups
+                if getattr(args, 'importance_weight_alpha', 0.0) > 0:
+                    trainer.importance_weight_alpha = args.importance_weight_alpha
+                if args.grad_subspace_k > 0:
+                    trainer.grad_subspace_k = args.grad_subspace_k
+                    trainer.grad_subspace_rank = args.grad_subspace_rank
+                    trainer.grad_subspace_alpha = getattr(args, 'grad_subspace_alpha', 1.0)
+                if hasattr(args, 'curvature_mode') and args.curvature_mode != "per-pert":
+                    trainer.curvature_mode = args.curvature_mode
+                    trainer.sophia_rho = args.sophia_rho
+                    if args.curvature_mode == "quality-filter":
+                        trainer.curvature_filter_keep = args.curvature_filter_keep
 
         # Forward-FD warmup: use forward-difference for early training, central for rest
         if args.ffd_warmup > 0:
