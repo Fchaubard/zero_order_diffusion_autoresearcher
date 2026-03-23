@@ -584,3 +584,12 @@ n/a	55.1397	16.6	discard	b58 batch 192
 n/a	54.6773	16.6	discard	b58 seed=157
 n/a	56.1340	16.6	discard	b58 seed=163
 n/a	54.0117	16.6	discard	b58 seed=167
+n/a	0.0000	0.0	crash	b58 fp16 precision (FID eval stuck/timeout)
+n/a	57.8247	22.3	discard	b59 n_embd=1024 (bigger NOT better — capacity NOT bottleneck!)
+n/a	62.5907	11.7	discard	b59 n_embd=512 (smaller is worse)
+n/a	75.1310	5.0	discard	b59 patch_size=8 (coarser patches worse)
+n/a	54.7217	16.6	discard	b59 z_L from input_emb (competitive!)
+n/a	55.2121	16.6	discard	b59 learnable z_L (neutral)
+n/a	54.2717	16.6	discard	b59 seed=173
+n/a	56.3512	16.6	discard	b59 seed=179
+n/a	53.5628	16.6	discard	b59 seed=181 (lucky)
