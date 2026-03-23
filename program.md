@@ -1,6 +1,6 @@
-# autoresearch
+# autoresearch with good ideas
 
-This is an experiment to have an LLM do its own research on zero order, schedule-free diffusion.
+This is an experiment to have an LLM do its own research on zero order schedule-free diffusion, with an idea priority queue to track experiments and ensure every idea we try is a well thought out, reasonable experiment to try. 
 
 ## Setup
 
@@ -15,7 +15,7 @@ To set up a new experiment, work with the user to:
    - `ideas.md` — This is a running log of ideas to try, or if they have been tried, what the results were, and learnings were. 
 4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains ImageNet data. If not, tell the human to run `uv run prepare.py`.
 5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Fill in ideas.md**: Create `ideas.md` if it doesnt already exist, if it does, read it and add some more ideas to it if you have net new ideas. The `idea template format` for each idea should be:
+6. **Create or Fill in ideas.md**: Do research on the idea, think hard about all the ideas you have to achieve the objective, then create `ideas.md` if it doesnt already exist, if it does, read my ideas I primed you with, and add more ideas if you have net new ideas. The `idea template format` for each idea should be:
    #
    - idea_id: `<a reasonable name to use for the wandb run name to track which is the wandb_run_name>`
    - Description: `<a simple, no acronym description of the research direction, and if appropriate math equations, citations, data from previous runs, etc>`
@@ -96,15 +96,7 @@ Note that the script is configured to always stop after 1 hour wallclock, so dep
 grep "^val_fid:" run.log
 ```
 
-## After each experiment completes
-
-When an experiment has completed its run, you MUST do all of the following in order:
-1. first, log the results to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions) and update the appropriate idea block `ideas.md` which you can find by `grep wandb_run_name`, specifically `Time of End` which is when the run ended, `Results vs. Baseline`, switch `Status` from `Running` to `Failed` if it did not improve or `Success` if it did improve, or for some reason you can not tell, `Unclear` which should be the case if you are genuinely unsure if its just seed noise or something.  
-3. then, conduct deep analysis on the wandb run logs and appropriate data and to think about what happened, and what was different from what you expected to happen. If you need to build any one off script to conduct your deep analysis, you can and should, but must always put it in ./garbage/ so it doesnt muck up my current directory. 
-4. once you have completed your analysis, update the appropriate idea block `ideas.md`, specifically the `Analysis` section, which you can find by `grep wandb_run_name`.
-5. then, think **hard** about what you would advise to do next based on this analysis. You should look online for inspiration but you should not do boring research or plagiarize others. We are doing novel research here so you can take inspiration, but never copy. Your ideas should largely come through the errors observed in the previous run analysis. Once you have some ideas of what to try next, finalize every field in the appropriate idea block `ideas.md`, such as `Conclusion` and `Next Ideas to Try`, which you can find by `grep wandb_run_name`. Then write new idea blocks in `ideas.md` for all your ideas to try. If you do not have any net new ideas or you are just confused or lost, do not worry, just skip this step. If you do have ideas, append each at the bottom of `ideas.md` in the `ideas format` above with only if those ideas are not already in `ideas.md`. The idea blocks in `ideas.md` must always be sorted ascending by `Time of Idea generation` so its easy to follow along from top to bottom with the baseline run at the very top. If net new, then fill in: `ideas_id` which should be the wandb_run_id we will use when running, `Description` to describe the idea, `Confidence` which should be 0 if you are not sure at all about the idea and up to 10 if you are 100% confident it will work, `Why` which is a text description about why you think its going to work with fact pattern and reasoning trace describing why the confince score, and `Time of idea generation` which is the current time. BE VERY CAREFUL WHAT IDEAS TO SUGGEST. If the ideas have <3 confidence, dont add it. We need to be efficient with our experiments and not waste time and resources on dumb ideas that have little chance of working. Lets make sure we add **reasonable** ideas based on some data, insight or previous literature in a related field or task that has a good probability of working.
-
-Just FYI, the TSV has a header row for `results.tsv` and 5 columns:
+The TSV has a header row for `results.tsv` and 5 columns:
 
 ```
 commit	val_fid	memory_gb	status	description
@@ -138,13 +130,14 @@ LOOP FOREVER:
 4. git commit
 5. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
 6. Read out the results: `grep "^val_fid:\|^peak_vram_mb:" run.log`
-7. Update `ideas.md` appropriately as described above.
-8. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-9. Update `ideas.md` appropriately as described above.
-10. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git) and update `ideas.md` appropriately as described above.
+7. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+8. When an experiment has completed its run, you MUST do all of the following in order:
+- first, log the results to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions) and update the appropriate idea block `ideas.md` which you can find by `grep wandb_run_name`, specifically `Time of End` which is when the run ended, `Results vs. Baseline`, switch `Status` from `Running` to `Failed` if it did not improve or `Success` if it did improve, or for some reason you can not tell, `Unclear` which should be the case if you are genuinely unsure if its just seed noise or something.  
+- then, conduct deep analysis on the wandb run logs and appropriate data and to think about what happened, and what was different from what you expected to happen. If you need to build any one off script to conduct your deep analysis, you can and should, but must always put it in ./garbage/ so it doesnt muck up my current directory. 
+- once you have completed your analysis, update the appropriate idea block `ideas.md`, specifically the `Analysis` section, which you can find by `grep wandb_run_name`.
+- then, think **hard** about what you would advise to do next based on this analysis. You should look online for inspiration but you should not do boring research or plagiarize others. We are doing novel research here so you can take inspiration, but never copy. Your ideas should largely come through the errors observed in the previous run analysis. Once you have some ideas of what to try next, finalize every field in the appropriate idea block `ideas.md`, such as `Conclusion` and `Next Ideas to Try`, which you can find by `grep wandb_run_name`. Then write new idea blocks in `ideas.md` for all your ideas to try. If you do not have any net new ideas or you are just confused or lost, do not worry, just skip this step. If you do have ideas, append each at the bottom of `ideas.md` in the `ideas format` above with only if those ideas are not already in `ideas.md`. The idea blocks in `ideas.md` must always be sorted ascending by `Time of Idea generation` so its easy to follow along from top to bottom with the baseline run at the very top. If net new, then fill in: `ideas_id` which should be the wandb_run_id we will use when running, `Description` to describe the idea, `Confidence` which should be 0 if you are not sure at all about the idea and up to 10 if you are 100% confident it will work, `Why` which is a text description about why you think its going to work with fact pattern and reasoning trace describing why the confince score, and `Time of idea generation` which is the current time. BE VERY CAREFUL WHAT IDEAS TO SUGGEST. If the ideas have <3 confidence, dont add it. We need to be efficient with our experiments and not waste time and resources on dumb ideas that have little chance of working. Lets make sure we add **reasonable** ideas based on some data, insight or previous literature in a related field or task that has a good probability of working.
 11. If val_fid improved (lower), you "advance" the branch, keeping the git commit
 12. If val_fid is equal or worse, you git reset back to where you started
-13. Conduct analysis, write a conclusion and then think deeply about more ideas to try and update `ideas.md` appropriately as described above.
 14. go back to step 1.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
