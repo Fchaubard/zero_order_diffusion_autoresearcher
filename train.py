@@ -123,6 +123,17 @@ spsa_group.add_argument("--saturating-alpha", type=float, default=0.1,
     help="Exponent for saturating curvature in 1.5-SPSA")
 spsa_group.add_argument("--lambda-reg", type=float, default=1.0,
     help="Minimum curvature regularization in 1.5-SPSA")
+spsa_group.add_argument("--curvature-ema", type=float, default=0.0,
+    help="EMA smoothing for curvature estimates across perturbations and steps. "
+         "0=disabled (per-perturbation curvature). E.g., 0.9 smooths curvature with "
+         "90%% weight on history. Reduces curvature noise with tied lr==eps.")
+spsa_group.add_argument("--curvature-mode", type=str, default="per-pert",
+    choices=["per-pert", "step-median", "sophia-clip"],
+    help="How curvature is applied. per-pert: each perturbation uses its own curvature (default). "
+         "step-median: collect all n_perts curvature estimates then use robust median for all. "
+         "sophia-clip: don't divide by curvature, instead clip gradient magnitude to rho/curvature.")
+spsa_group.add_argument("--sophia-rho", type=float, default=0.05,
+    help="Clipping threshold for sophia-clip curvature mode. Larger=bigger allowed steps.")
 spsa_group.add_argument("--memory-efficient", action="store_true",
     help="Memory efficient mode: regenerate perturbation directions via RNG")
 spsa_group.add_argument("--spsa-accum-steps", type=int, default=1,
@@ -400,6 +411,10 @@ spsa_group.add_argument("--sparse-pert", type=float, default=0.0,
          "Only perturbs a random subset of parameters each step. Lower dimensionality → "
          "better gradient estimate for those params. All params covered over many steps. "
          "E.g., 0.1 = 10x fewer params perturbed = 10x lower variance for those params.")
+spsa_group.add_argument("--block-coord", action="store_true",
+    help="MeZO-BCD: Block Coordinate Descent. Perturb one semantic parameter block per step, "
+         "cycling through blocks. Reduces gradient variance by factor K (number of blocks). "
+         "Blocks: embedding (patch+pos+time+label), transformer (attention+MLP+adaLN), output.")
 spsa_group.add_argument("--cascade-T", action="store_true",
     help="Cascade T training: at T=k, evaluate loss at EACH intermediate step (1,2,...,k) "
          "and sum them. This trains all ODE steps simultaneously rather than just the final output. "
@@ -456,6 +471,10 @@ spsa_group.add_argument("--classifier", type=str, default="inception_v3",
     help="Frozen classifier for autoreg_ce loss. inception_v3=77.3%% acc (slow, 299px). "
          "mobilenet_v3_large=75.2%% (fast, 224px). mobilenet_v3_small=67.7%% (very fast). "
          "efficientnet_b0=77.1%% (fast). resnet50=76.1%%. resnet18=69.8%% (fastest).")
+spsa_group.add_argument("--clf-resolution", type=int, default=None,
+    help="Override classifier input resolution (default: 299 for InceptionV3, 224 for others). "
+         "Lower resolution = faster inference. 256px is 1.5x faster, 224px is 2x faster. "
+         "Risk: lower resolution may degrade SPSA gradient quality.")
 spsa_group.add_argument("--ce-flip-aug", action="store_true",
     help="Random horizontal flip of generated images before InceptionV3 classification. "
          "Regularizes CE loss by preventing exploitation of left/right artifacts. "
@@ -499,6 +518,9 @@ spsa_group.add_argument("--lora-alpha", type=float, default=1.0,
 
 spsa_group.add_argument("--save-model", type=str, default=None,
     help="Save final model state_dict to this path after training (for model soup)")
+spsa_group.add_argument("--clf-fp16", action="store_true",
+    help="Convert classifier model to permanent fp16 (instead of fp32 + autocast). "
+         "Saves fp32→fp16 cast overhead on every forward pass. Risk: minor numerical differences.")
 
 # Degradation curriculum: progressive image corruption instead of Gaussian noise
 spsa_group.add_argument("--degrade-curriculum", action="store_true",
@@ -1069,7 +1091,7 @@ class SPSATrainer:
                  grad_clip=0.0, forward_fd=False, guided_pert=0.0, sign_update=False,
                  pert_recycle=1, median_clip=0.0, antithetic=False,
                  loss_explosion_guard=False, topk=0.0, winsorize_pct=0.0,
-                 richardson=False):
+                 richardson=False, block_coord=False):
         self.lr = lr
         self.epsilon = epsilon
         self.n_perts = n_perts
@@ -1108,6 +1130,7 @@ class SPSATrainer:
         self._verify_total_count = 0
         self._loss_ema = None  # EMA of loss for explosion detection
         self.sparse_pert = 0.0  # fraction of params to perturb (0=all)
+        self.block_coord = block_coord
 
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.total = sum(p.numel() for p in self.params)
@@ -1144,6 +1167,34 @@ class SPSATrainer:
                 'grid': ((numel + TRITON_BLOCK_SIZE - 1) // TRITON_BLOCK_SIZE,),
             })
             offset += numel
+
+        # MeZO-BCD: Block Coordinate Descent — group params into semantic blocks
+        if block_coord:
+            # Map each param to its semantic block by name prefix
+            named_params = {id(p): name for name, p in model.named_parameters() if p.requires_grad}
+            block_defs = [
+                ('embedding', ['patch_embed', 'pos_embed', 'time_embed', 'label_embed']),
+                ('transformer', ['blocks']),
+                ('output', ['final_adaLN', 'final_proj']),
+            ]
+            self.bcd_blocks = []  # list of {'name': str, 'param_indices': [int], 'total': int}
+            for block_name, prefixes in block_defs:
+                indices = []
+                for pi, info in enumerate(self.param_info):
+                    pname = named_params.get(id(info['param']), '')
+                    if any(pname.startswith(pfx) or pname == pfx for pfx in prefixes):
+                        indices.append(pi)
+                if indices:
+                    total_block = sum(self.param_info[i]['numel'] for i in indices)
+                    self.bcd_blocks.append({
+                        'name': block_name,
+                        'param_indices': set(indices),
+                        'total': total_block,
+                    })
+            self.bcd_current = 0
+            print(f"  MeZO-BCD: {len(self.bcd_blocks)} blocks, cycling each step:")
+            for b in self.bcd_blocks:
+                print(f"    {b['name']}: {b['total']:,} params ({b['total']*100/self.total:.1f}%)")
 
         # Gradient accumulator per param (bf16) — skip if memory_efficient
         if not memory_efficient:
@@ -1184,6 +1235,11 @@ class SPSATrainer:
         self._kalman_Q = 0.05  # process noise (gradient changes between steps)
         # Kalman loss filter state
         self.kalman_loss = False  # set from args after construction
+        # Curvature EMA state (smooths curvature estimates across perturbations and steps)
+        self.curvature_ema = 0.0  # set from args after construction
+        self.curvature_mode = "per-pert"  # per-pert, step-median, sophia-clip
+        self.sophia_rho = 0.05  # clipping threshold for sophia-clip mode
+        self._curv_ema_val = None  # running EMA of curvature
 
         mode_str = " [MEMORY EFFICIENT]" if memory_efficient else ""
         accum_str = f", accum={accum_steps}" if accum_steps > 1 else ""
@@ -1206,6 +1262,7 @@ class SPSATrainer:
 
         total_loss = 0.0
         _all_pert_losses = []  # per-perturbation losses for variance tracking
+        _all_curvatures = []  # per-perturbation curvature values for diagnostics
 
         # Reset Kalman loss filter state for this step
         if self.kalman_loss and hasattr(self, '_kl_state'):
@@ -1251,10 +1308,14 @@ class SPSATrainer:
             if is_antithetic:
                 packed = ~packed  # bitwise complement = opposite direction
 
+            # MeZO-BCD: only perturb current block's parameters
+            _sparse_active = None  # None = all active
+            if self.block_coord and hasattr(self, 'bcd_blocks'):
+                _sparse_active = self.bcd_blocks[self.bcd_current % len(self.bcd_blocks)]['param_indices']
+
             # Sparse perturbation: only perturb a subset of parameter groups each step
             # Uses modular arithmetic to cycle through groups deterministically
-            _sparse_active = None  # None = all active
-            if self.sparse_pert > 0:
+            if _sparse_active is None and self.sparse_pert > 0:
                 n_groups = len(self.param_info)
                 k_active = max(1, int(n_groups * self.sparse_pert))
                 # Deterministic rotation: each perturbation perturbs a different subset
@@ -1372,8 +1433,25 @@ class SPSATrainer:
                     # Compute gradient coefficient
                     if self.use_curvature:
                         curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
-                        curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
-                        grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+                        curv_sat = max(curv ** self.saturating_alpha, self.lambda_reg)
+                        # Curvature EMA: smooth across perturbations and steps
+                        if self.curvature_ema > 0:
+                            if self._curv_ema_val is None:
+                                self._curv_ema_val = curv_sat
+                            else:
+                                self._curv_ema_val = self.curvature_ema * self._curv_ema_val + (1 - self.curvature_ema) * curv_sat
+                            curvature = self._curv_ema_val
+                        else:
+                            curvature = curv_sat
+                        _all_curvatures.append(curvature)
+
+                        if self.curvature_mode == "per-pert":
+                            # Original: divide gradient by per-perturbation curvature
+                            grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
+                        else:
+                            # step-median and sophia-clip: compute gradient WITHOUT curvature now
+                            # Curvature will be applied after all perturbations are collected
+                            grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
                     else:
                         grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
 
@@ -1475,6 +1553,18 @@ class SPSATrainer:
                 lo_clip = sorted_coeffs[k]
                 hi_clip = sorted_coeffs[n - 1 - k]
                 coeffs = [max(lo_clip, min(hi_clip, c)) for c in coeffs]
+
+            # Apply deferred curvature scaling (step-median or sophia-clip modes)
+            if self.use_curvature and self.curvature_mode != "per-pert" and _all_curvatures:
+                import statistics as _stats
+                median_curv = _stats.median(_all_curvatures)
+                if self.curvature_mode == "step-median":
+                    # Scale all coefficients by 1/median_curvature
+                    coeffs = [c / median_curv for c in coeffs]
+                elif self.curvature_mode == "sophia-clip":
+                    # Clip each coefficient to [-rho/curvature, rho/curvature]
+                    clip_val = self.sophia_rho / median_curv
+                    coeffs = [max(-clip_val, min(clip_val, c)) for c in coeffs]
 
             # Median-of-means: split perts into K groups, mean per group, median across groups
             # Each pert keeps its original coefficient but scaled by median-of-means / plain-mean
@@ -1734,6 +1824,18 @@ class SPSATrainer:
             import statistics
             self._last_loss_std = statistics.stdev(_all_pert_losses) if len(_all_pert_losses) > 1 else 0.0
 
+        # Track curvature statistics for diagnostics
+        if _all_curvatures:
+            import statistics as _stats
+            self._last_curv_mean = sum(_all_curvatures) / len(_all_curvatures)
+            self._last_curv_median = _stats.median(_all_curvatures)
+            self._last_curv_min = min(_all_curvatures)
+            self._last_curv_max = max(_all_curvatures)
+
+        # Advance BCD block counter
+        if self.block_coord and hasattr(self, 'bcd_blocks'):
+            self.bcd_current = (self.bcd_current + 1) % len(self.bcd_blocks)
+
         return total_loss / self.n_perts
 
     def _step_layerwise(self, loss_fn, iteration):
@@ -1799,7 +1901,15 @@ class SPSATrainer:
 
             if self.use_curvature:
                 curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
-                curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
+                curv_sat = max(curv ** self.saturating_alpha, self.lambda_reg)
+                if self.curvature_ema > 0:
+                    if self._curv_ema_val is None:
+                        self._curv_ema_val = curv_sat
+                    else:
+                        self._curv_ema_val = self.curvature_ema * self._curv_ema_val + (1 - self.curvature_ema) * curv_sat
+                    curvature = self._curv_ema_val
+                else:
+                    curvature = curv_sat
                 grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
             else:
                 grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
@@ -1866,7 +1976,15 @@ class SPSATrainer:
 
             if self.use_curvature:
                 curv = abs(loss_plus - 2 * loss_clean + loss_minus) / (self.epsilon ** 2)
-                curvature = max(curv ** self.saturating_alpha, self.lambda_reg)
+                curv_sat = max(curv ** self.saturating_alpha, self.lambda_reg)
+                if self.curvature_ema > 0:
+                    if self._curv_ema_val is None:
+                        self._curv_ema_val = curv_sat
+                    else:
+                        self._curv_ema_val = self.curvature_ema * self._curv_ema_val + (1 - self.curvature_ema) * curv_sat
+                    curvature = self._curv_ema_val
+                else:
+                    curvature = curv_sat
                 grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts * curvature)
             else:
                 grad_coeff = (loss_plus - loss_minus) / (2 * self.epsilon * self.n_perts)
@@ -2202,6 +2320,7 @@ else:
         topk=args.spsa_topk,
         winsorize_pct=args.winsorize_pct,
         richardson=args.richardson,
+        block_coord=args.block_coord,
     )
     # Progressive unfreezing: initially freeze early layers
     if args.progressive_unfreeze:
@@ -2279,6 +2398,13 @@ else:
     if args.kalman_loss:
         trainer.kalman_loss = True
         print(f"  Kalman loss filter: smooth per-perturbation loss differences")
+    if args.curvature_ema > 0:
+        trainer.curvature_ema = args.curvature_ema
+        print(f"  Curvature EMA: smoothing={args.curvature_ema:.2f}")
+    if hasattr(args, 'curvature_mode') and args.curvature_mode != "per-pert":
+        trainer.curvature_mode = args.curvature_mode
+        trainer.sophia_rho = args.sophia_rho
+        print(f"  Curvature mode: {args.curvature_mode}" + (f" (rho={args.sophia_rho})" if args.curvature_mode == "sophia-clip" else ""))
 
 train_loader = make_dataloader("train", args.device_batch_size)
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -2384,12 +2510,20 @@ if args.solver == "spsa":
             raise ValueError(f"Unknown classifier: {_clf_name}")
         _clf_model.eval()
         _clf_model = _clf_model.to(device).to(memory_format=torch.channels_last)
+        # Override resolution if requested
+        _clf_res_override = getattr(args, 'clf_resolution', None)
+        if _clf_res_override is not None:
+            _clf_size = _clf_res_override
         _clf_transform = _tv_transforms.Compose([
             _tv_transforms.Resize((_clf_size, _clf_size), antialias=True),
             _tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+        if getattr(args, 'clf_fp16', False):
+            _clf_model = _clf_model.half()
+            print(f"{_clf_name} classifier loaded for class_ce loss (1000-way ImageNet, {_clf_size}px, channels_last, PERMANENT fp16)")
+        else:
+            print(f"{_clf_name} classifier loaded for class_ce loss (1000-way ImageNet, {_clf_size}px, channels_last)")
         spsa_classifier[0] = (_clf_model, _clf_transform)
-        print(f"{_clf_name} classifier loaded for class_ce loss (1000-way ImageNet, {_clf_size}px, channels_last)")
 
     # InceptionV3 feature extractor for feature matching loss (WITHOUT classification head)
     spsa_feat_extractor = [None]
@@ -5060,6 +5194,7 @@ while True:
                     topk=args.spsa_topk,
                     winsorize_pct=args.winsorize_pct,
                     richardson=args.richardson,
+                    block_coord=args.block_coord,
                 )
                 if args.sparse_pert > 0:
                     trainer.sparse_pert = args.sparse_pert
@@ -5447,6 +5582,11 @@ while True:
     }
     if args.solver == "spsa" and hasattr(trainer, '_last_loss_std'):
         _wandb_metrics["spsa/loss_std"] = trainer._last_loss_std
+    if args.solver == "spsa" and hasattr(trainer, '_last_curv_mean'):
+        _wandb_metrics["spsa/curv_mean"] = trainer._last_curv_mean
+        _wandb_metrics["spsa/curv_median"] = trainer._last_curv_median
+        _wandb_metrics["spsa/curv_min"] = trainer._last_curv_min
+        _wandb_metrics["spsa/curv_max"] = trainer._last_curv_max
     if args.solver == "spsa":
         _wandb_metrics["spsa/current_T"] = current_T[0]
     wandb.log(_wandb_metrics, step=step)
