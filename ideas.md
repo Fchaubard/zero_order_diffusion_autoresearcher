@@ -1153,3 +1153,99 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: hebbian_z_update
+Description: Replace the standard additive input injection in l_level with a Hebbian-inspired update rule. Instead of z = z + injection, use z = z + alpha * (injection * z.mean(dim=-1, keepdim=True)) where the update is proportional to the correlation between the current state and the injection. This is inspired by Oja's rule from computational neuroscience, where synaptic weights update proportionally to pre-post correlation. The recursive shared-weight block already looks like a recurrent neural circuit — making the update rule Hebbian could improve how information flows through the recursion.
+Confidence: 5
+Why: Bio-mimetic learning rules like Oja's/Hebb's rule have shown surprising effectiveness in simple neural circuits. The TRM recursive structure IS a neural circuit with shared weights. A Hebbian gating mechanism (only update when injection correlates with current state) could help the recursion converge faster and more stably. The risk is that it changes the gradient flow significantly and may need LR adjustment.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: predictive_coding_loss
+Description: Inspired by Karl Friston's predictive coding theory and Rao & Ballard (1999): instead of computing loss only on the final output, add auxiliary "prediction error" losses at each recursion level. At each L-cycle step, the model predicts what the next z_L state should be, and the error between prediction and actual next state becomes an auxiliary loss. This forces each recursive step to make a meaningful prediction, not just pass information through. Implementation: after each l_level call, compute prediction_error = MSE(z_L_predicted, z_L_actual.detach()) and add 0.01 * prediction_error to the total loss.
+Confidence: 5
+Why: Predictive coding is how the brain is hypothesized to process hierarchical information — each level predicts the next and only passes prediction errors upward. Our recursive model has a natural hierarchy (z_L updates → z_H consolidation). Adding prediction error objectives at each level could improve gradient signal through the deep recursion (6 L-cycles in first H). Currently, gradients must flow through all 6 cycles from the final loss — auxiliary losses at each level provide local learning signals, similar to deep supervision in U-Nets.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: attention_to_recursion_history
+Description: Instead of only attending to the current z_H + input_emb in each L-cycle, let the model attend to a compressed history of previous recursion states. Maintain a running "memory" of past z_L states (e.g., exponential moving average) and concatenate it as extra key-value context in attention. This gives the model temporal context within the recursion — it can see how the representation has evolved. Inspired by Alex Graves' work on neural Turing machines and external memory.
+Confidence: 5
+Why: Currently each L-cycle step only sees the current z_L and z_H+input. It has no memory of how z_L evolved through previous cycles. A simple EMA memory (z_mem = 0.9*z_mem + 0.1*z_L after each cycle) concatenated as extra KV tokens in attention would give the model access to the recursion trajectory. This is a lightweight form of "thinking about thinking" — the model can observe its own refinement process. Risk: adds complexity to the attention and may slow down per-step time.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: stochastic_recursion_exit
+Description: Instead of always running exactly 6 L-cycles in the first H-cycle, implement a learned "exit gate" that decides when to stop iterating. After each L-cycle, a small MLP (z_L → scalar sigmoid) predicts a halting probability. Training uses the adaptive computation time (ACT) framework from Alex Graves (2016). This lets the model dynamically allocate compute: easy images exit early (saving compute), hard images use all 6 cycles. The "ponder cost" penalty encourages efficiency. This is directly inspired by Graves' original ACT paper and Schmidhuber's work on self-delimiting programs.
+Confidence: 4
+Why: Different images and timesteps need different amounts of recursive refinement. Clean images near t=1 may only need 2-3 L-cycles, while noisy images near t=0 benefit from all 6. Currently we waste compute on easy cases. ACT gives the model agency over its own computation depth. Risk: ACT is notoriously tricky to train — the halting probability can collapse to always-halt or never-halt. The ponder cost coefficient needs careful tuning.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: contrastive_cfg_training
+Description: Instead of just dropping class labels for CFG training (replacing with zeros), use a contrastive approach: when dropping labels for a sample, replace with a RANDOM WRONG class label instead. This teaches the unconditional pathway to actively distinguish "no class" from "wrong class" — making the CFG direction (cond - uncond) more semantically meaningful. During inference, the "unconditional" path uses zero class embedding as before.
+Confidence: 6
+Why: Current CFG training just zeros out the class embedding. The unconditional model learns to denoise without class information. But contrastive CFG (using wrong class labels as negative examples) teaches the model what NOT to generate, making the guidance direction cond-uncond more aligned with class-specific features. This is inspired by contrastive learning literature (SimCLR, CLIP) where negative examples improve representation quality. The implementation is trivial: one line change in the label dropout code.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: multi_step_consistency_loss  
+Description: Inspired by consistency models (Song et al., 2023): add an auxiliary loss that enforces the model's predictions at different ODE timesteps to be consistent. If the model predicts velocity v(x_t, t), then x_0_hat = x_t + (1-t)*v should be consistent regardless of t. Add loss: MSE(x0_hat_from_t1, x0_hat_from_t2.detach()) for the two timesteps already used in dual-t training. This is essentially free since we already compute two forward passes at different t.
+Confidence: 6
+Why: The dual-t loss already gives us two predictions at different timesteps for the same clean image. These predictions should reconstruct the same x0. Enforcing this consistency is a strong self-supervised signal that doesn't require any additional forward passes. The .detach() on one side makes it a teacher-student style loss. Consistency models have shown impressive results in distillation — applying the same principle during training could improve prediction quality.
+Time of idea generation: 2026-03-24 06:00
+Status: Not Implemented
+HPPs:
+Time of run start and end:
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
