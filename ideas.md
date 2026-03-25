@@ -1249,3 +1249,51 @@ Analysis:
 Conclusion:
 Next Ideas to Try:
 -----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: concat_linear_injection
+Description: Replace the additive input injection in the recursion with a learned linear projection that combines all three signals. Instead of z_H + input_emb + alpha*z_mem (fixed weights), use Linear(concat(z_H, input_emb, z_mem)) which learns a 3*768→768 projection. This lets the model learn the optimal mixing of current state (z_H), raw input (input_emb), and recursion history (z_mem) for each patch token. The projection is shared across all recursion steps (since it's part of the model, not the shared block).
+Confidence: 7
+Why: The current additive injection treats all three signals equally (z_H and input_emb at weight 1.0, z_mem at 0.05). A learned projection can discover that different channels need different mixing ratios, and can capture cross-signal interactions (e.g., "attend to z_mem more when z_H and input_emb disagree"). The 3*768→768 linear adds 1.77M params (13% more) but these are reused across all 6+1 recursion steps, so the amortized cost is low.
+Time of idea generation: 2026-03-25 02:00
+Status: Running
+HPPs: asym 6+1, rCFG 2.5, wd20, injection_proj Linear(3*768, 768)
+Time of run start and end: 2026-03-25 02:05 -
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: gated_injection_combine
+Description: Time-conditioned gated combination of (z_H, input_emb, z_mem). The conditioning vector c (time + class) produces 3 sigmoid gates via a small MLP, which independently scale each input signal before adding. This lets the model learn to weight signals differently at different denoising timesteps — e.g., rely more on z_mem (recursion history) at noisy timesteps and more on input_emb at clean timesteps. Implementation: gates = sigmoid(MLP(c)).chunk(3), combined = g1*z_H + g2*input_emb + g3*z_mem.
+Confidence: 6
+Why: Different denoising stages likely need different injection compositions. At t near 0 (pure noise), the model should rely more on its own recursion (z_H, z_mem) since input_emb is mostly noise. At t near 1, input_emb carries strong signal and should dominate. Time-conditioned gates learn this scheduling automatically. The gating MLP is tiny (768→3*768, ~2.4M params) and the sigmoid ensures smooth interpolation.
+Time of idea generation: 2026-03-25 02:00
+Status: Running
+HPPs: asym 6+1, rCFG 2.5, wd20, injection_gate MLP(768, 3*768)
+Time of run start and end: 2026-03-25 02:05 -
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
+
+-----------------------------------------------------
+idea_id: cross_attn_injection
+Description: z_L cross-attends to concatenated [z_H, input_emb, z_mem] as key-value context. Instead of fixed additive injection, each z_L token learns to attend to the most relevant parts of all three input signals via multi-head attention. z_L provides queries, [z_H || input_emb || z_mem] (3N tokens) provides keys and values. This is the most expressive combination method — the model can learn per-token, per-head attention patterns over the three signals. Uses dedicated cross-attention weights (cross_q, cross_k, cross_v, cross_proj), separate from the self-attention in the shared block.
+Confidence: 5
+Why: Cross-attention is the most information-rich way to combine multiple signals. Each z_L token can selectively attend to different parts of z_H, input_emb, and z_mem based on content. This is how transformers combine information in encoder-decoder architectures. Risk: significantly more compute (3x KV length = 3x attention cost per recursion step) and memory (+5.3GB). Also more parameters to train in 1 hour. The trade-off between expressiveness and training efficiency is the key question.
+Time of idea generation: 2026-03-25 02:00
+Status: Running
+HPPs: asym 6+1, rCFG 2.5, wd20, cross_q/k/v/proj Linear(768, 768)
+Time of run start and end: 2026-03-25 02:05 -
+Results vs. Baseline:
+wandb link:
+Analysis:
+Conclusion:
+Next Ideas to Try:
+-----------------------------------------------------
