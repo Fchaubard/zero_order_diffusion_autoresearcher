@@ -404,10 +404,10 @@ class RecursiveDiT(nn.Module):
             group["initial_lr"] = group["lr"]
         return optimizer
 
-    def _decode(self, z_H, c):
-        """Decode z_H to image space."""
-        shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
-        x = norm(z_H) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    def _decode(self, z_H):
+        """Decode z_H to image space. No conditioning — pure readout of the answer."""
+        # No AdaLN conditioning for decode (following TRM: z_H is the answer, just read it)
+        x = norm(z_H)
         x = self.final_proj(x)
         x = self.unpatchify(x)
         return x
@@ -418,24 +418,33 @@ class RecursiveDiT(nn.Module):
         NO noise schedules. NO teacher forcing.
 
         z_H and z_L start from random noise and get refined to produce a clean image.
+
+        Following TRM: conditioning (c) is only used for L-updates (working memory).
+        H-updates are UNCONDITIONED — z_H is a pure accumulator that reads z_L.
+
         The four loops:
           Loop 3 (T_H_T_L): macro-cycles of L-refine then H-consolidate
-            Loop 1 (T_L): L-module consecutive reps (working memory refinement)
-            Loop 2 (T_H): H-module consecutive reps (answer consolidation)
+            Loop 1 (T_L): L-module reps — conditioned on c (task-specific thinking)
+            Loop 2 (T_H): H-module reps — NO conditioning (pure aggregation)
         """
         t_htl = num_thtl if num_thtl is not None else self.config.h_cycles
         t_l = self.config.l_cycles
         t_h = 1  # TODO: ablate T_H > 1
 
+        # Zero conditioning for H-updates (TRM: z_H doesn't see task conditioning)
+        c_zero = torch.zeros_like(c)
+
         for _htl in range(t_htl):
             # Loop 1: T_L rounds of L-consolidation (refine working memory)
+            # CONDITIONED on c — z_L needs to know what class to generate
             for _l in range(t_l):
                 z_L = self.l_level(z_L, z_H, c)
             # Loop 2: T_H rounds of H-consolidation (update answer)
+            # UNCONDITIONED — z_H is a pure accumulator, just reads z_L
             for _h in range(t_h):
-                z_H = self.l_level(z_H, z_L, c)
+                z_H = self.l_level(z_H, z_L, c_zero)
 
-        return self._decode(z_H, c)
+        return self._decode(z_H)
 
     def forward(self, x, t, class_labels=None, num_thtl=None):
         """
