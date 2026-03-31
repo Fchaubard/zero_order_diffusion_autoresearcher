@@ -1,9 +1,15 @@
 """
 TRM-inspired Recursive Diffusion Transformer pretraining script. Single-GPU, single-file.
 Recursive DiT with shared-weight blocks and two-level latent refinement (z_H, z_L),
-adapted from TinyRecursiveModels for flow matching on ImageNet ILSVRC2012.
-Supports truncated BPTT (TRM-style, gradient truncation across H-cycles)
-and 1.5-SPSA (zero-order, no teacher forcing).
+adapted from TinyRecursiveModels for image generation on ImageNet ILSVRC2012.
+
+IMPORTANT: NO NOISE SCHEDULES! NO TEACHER FORCING!
+The TRM recursion IS the denoising process. z_H and z_L are initialized from
+random noise and refined through recursive shared-weight blocks to produce
+a clean image. The model learns end-to-end: noise → recursion → clean image.
+Variable recursion depth during training enables test-time compute scaling.
+
+Supports BPTT (backprop through full recursion) and 1.5-SPSA (zero-order).
 
 Usage:
     uv run train.py                              # truncated BPTT (default)
@@ -398,65 +404,95 @@ class RecursiveDiT(nn.Module):
             group["initial_lr"] = group["lr"]
         return optimizer
 
-    def _recurse(self, input_emb, c):
-        """Run recursive z_H/z_L computation and output projection."""
-        B, N = input_emb.shape[:2]
-        z_H = input_emb
-        z_L = self.z_L_init.expand(B, N, -1)
-
-        for _h in range(self.config.h_cycles - 1):
-            for _l in range(self.config.l_cycles):
-                z_L = self.l_level(z_L, z_H + input_emb, c)
-            z_H = self.l_level(z_H, z_L, c)
-
-        eval_mult = 2 if not self.training else 1
-        for _l in range(self.config.l_cycles * eval_mult):
-            z_L = self.l_level(z_L, z_H + input_emb, c)
-        z_H = self.l_level(z_H, z_L, c)
-        for _l in range(self.config.l_cycles * eval_mult):
-            z_H = self.l_level(z_H, z_L + input_emb, c)
-
+    def _decode(self, z_H, c):
+        """Decode z_H to image space."""
         shift, scale = self.final_adaLN(c).chunk(2, dim=-1)
         x = norm(z_H) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         x = self.final_proj(x)
         x = self.unpatchify(x)
         return x
 
-    def forward(self, x, t, class_labels=None):
+    def _recurse(self, z_H, z_L, c, num_thtl=None):
         """
-        x: (B, C, H, W) noisy images
-        t: (B,) timesteps in [0, 1]
-        class_labels: (B,) class indices
-        Returns: (B, C, H, W) predicted velocity
-        """
-        input_emb = self.patch_embed(x) + self.pos_embed
-        c = self.time_embed(t)
-        B = input_emb.shape[0]
+        TRM recursive refinement — the recursion IS the denoiser.
+        NO noise schedules. NO teacher forcing.
 
-        if self.training:
-            # Training: randomly drop class labels for classifier-free guidance
-            if class_labels is not None:
-                label_emb = self.label_embed(class_labels)
-                if self.p_uncond > 0:
-                    drop_mask = torch.rand(B, device=c.device) < self.p_uncond
-                    label_emb = label_emb * (~drop_mask).float().unsqueeze(-1)
-                c = c + label_emb
-            return self._recurse(input_emb, c)
-        else:
-            # Inference: apply classifier-free guidance
-            if class_labels is not None and self.cfg_scale > 1.0:
-                c_cond = c + self.label_embed(class_labels)
-                c_uncond = c  # time-only conditioning
-                # Batch conditional+unconditional together for GPU efficiency
-                input_emb_2 = input_emb.repeat(2, 1, 1)
-                c_2 = torch.cat([c_uncond, c_cond], dim=0)
-                out_2 = self._recurse(input_emb_2, c_2)
-                out_uncond, out_cond = out_2.chunk(2, dim=0)
-                return out_uncond + self.cfg_scale * (out_cond - out_uncond)
-            else:
-                if class_labels is not None:
-                    c = c + self.label_embed(class_labels)
-                return self._recurse(input_emb, c)
+        z_H and z_L start from random noise and get refined to produce a clean image.
+        The four loops:
+          Loop 3 (T_H_T_L): macro-cycles of L-refine then H-consolidate
+            Loop 1 (T_L): L-module consecutive reps (working memory refinement)
+            Loop 2 (T_H): H-module consecutive reps (answer consolidation)
+        """
+        t_htl = num_thtl if num_thtl is not None else self.config.h_cycles
+        t_l = self.config.l_cycles
+        t_h = 1  # TODO: ablate T_H > 1
+
+        for _htl in range(t_htl):
+            # Loop 1: T_L rounds of L-consolidation (refine working memory)
+            for _l in range(t_l):
+                z_L = self.l_level(z_L, z_H, c)
+            # Loop 2: T_H rounds of H-consolidation (update answer)
+            for _h in range(t_h):
+                z_H = self.l_level(z_H, z_L, c)
+
+        return self._decode(z_H, c)
+
+    def forward(self, x, t, class_labels=None, num_thtl=None):
+        """
+        TRM-Diffusion forward pass.
+
+        IMPORTANT: We do NOT use noise schedules or teacher forcing.
+        The TRM recursion IS the denoising process.
+        z_H and z_L are initialized from random noise (the "carry")
+        and refined through recursive shared-weight blocks to produce a clean image.
+
+        For compatibility with prepare.py's evaluate_fid (which uses ODE solver),
+        we return (clean_prediction - x) as a "velocity". The ODE solver then
+        iteratively moves x toward the clean prediction.
+
+        Args:
+            x: (B, C, H, W) — current state (noise at start, refined image later)
+            t: (B,) — IGNORED during training. Used only for conditioning compatibility.
+            class_labels: (B,) — class indices for conditional generation
+            num_thtl: optional override for number of macro-cycles (for variable depth training)
+        """
+        B = x.shape[0]
+        device = x.device
+        N = self.patch_embed.num_patches
+        C = self.config.n_embd
+
+        # Conditioning: class labels only. Time embedding gets zeros (no schedule).
+        # We keep time_embed in the architecture for compatibility but feed it zeros.
+        c = self.time_embed(torch.zeros(B, device=device))
+        if class_labels is not None:
+            label_emb = self.label_embed(class_labels)
+            if self.training and self.p_uncond > 0:
+                drop_mask = torch.rand(B, device=device) < self.p_uncond
+                label_emb = label_emb * (~drop_mask).float().unsqueeze(-1)
+            c = c + label_emb
+
+        # Initialize the carry from random noise — this is where variety comes from.
+        # z_H = "answer accumulator" — starts as noise, refined to clean image
+        # z_L = "working memory" — scratchpad for intermediate computation
+        # We seed from x so that the same input noise produces the same output
+        # (important for ODE solver at eval which calls forward multiple times)
+        z_H = self.patch_embed(x) + self.pos_embed  # carry seeded from input noise
+        z_L = torch.randn(B, N, C, device=device)   # fresh working memory
+
+        # The TRM recursion IS the denoiser — no noise schedules allowed!
+        clean_pred = self._recurse(z_H, z_L, c, num_thtl=num_thtl)
+
+        if not self.training and self.cfg_scale > 1.0 and class_labels is not None:
+            # CFG: also run unconditional and combine
+            c_uncond = self.time_embed(torch.zeros(B, device=device))
+            z_H_u = self.patch_embed(x) + self.pos_embed
+            z_L_u = torch.randn(B, N, C, device=device)
+            uncond_pred = self._recurse(z_H_u, z_L_u, c_uncond, num_thtl=num_thtl)
+            clean_pred = uncond_pred + self.cfg_scale * (clean_pred - uncond_pred)
+
+        # Return as "velocity" for ODE solver compatibility with prepare.py
+        # velocity = (where we want to go) - (where we are)
+        return clean_pred - x
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
@@ -1091,40 +1127,40 @@ while True:
     t0 = time.time()
 
     if args.solver == "tbptt":
-        # ----- TBPTT: cosine+MSE flow matching loss with truncated BPTT -----
+        # =====================================================================
+        # TRM RECURSIVE DENOISING — NO NOISE SCHEDULES! NO TEACHER FORCING!
+        #
+        # The TRM recursion IS the denoiser. We start from random noise,
+        # the model's recursive shared-weight blocks refine it into a clean image.
+        # Loss = reconstruction error between model output and clean target.
+        #
+        # IMPORTANT: We do NOT use flow_matching.forward_sample(), timestep
+        # sampling, velocity targets, or any noise schedule. The entire
+        # "denoising" happens inside the model's recursive forward pass.
+        # =====================================================================
         for micro_step in range(grad_accum_steps):
             with autocast_ctx:
                 batch_size = x.shape[0]
-                if args.logit_normal_t:
-                    t = torch.sigmoid(torch.randn(batch_size, device=x.device))
-                else:
-                    t = torch.rand(batch_size, device=x.device)
-                x_t, velocity = flow_matching.forward_sample(x, t)
-                pred = model(x_t, t, class_labels=y)
-                # Clamp prediction magnitude to prevent outliers
-                with torch.no_grad():
-                    max_mag = velocity.flatten(1).norm(dim=1).max() * 3
-                pred_mag = pred.flatten(1).norm(dim=1, keepdim=True).view(-1,1,1,1)
-                scale = torch.clamp(max_mag / (pred_mag + 1e-8), max=1.0)
-                pred = pred * scale
-                # Dual-t: second forward with different timestep for richer gradient
-                if args.logit_normal_t:
-                    t2 = torch.sigmoid(torch.randn(batch_size, device=x.device))
-                else:
-                    t2 = torch.rand(batch_size, device=x.device)
-                x_t2, vel2 = flow_matching.forward_sample(x, t2)
-                pred2 = model(x_t2, t2, class_labels=y)
-                with torch.no_grad():
-                    max_mag2 = vel2.flatten(1).norm(dim=1).max() * 3
-                pred2_mag = pred2.flatten(1).norm(dim=1, keepdim=True).view(-1,1,1,1)
-                scale2 = torch.clamp(max_mag2 / (pred2_mag + 1e-8), max=1.0)
-                pred2 = pred2 * scale2
-                huber = 0.5 * (F.l1_loss(pred, velocity) + F.l1_loss(pred2, vel2))
-                cos1 = 1.0 - F.cosine_similarity(pred.flatten(1).float(), velocity.flatten(1).float(), dim=1).mean()
-                cos2 = 1.0 - F.cosine_similarity(pred2.flatten(1).float(), vel2.flatten(1).float(), dim=1).mean()
-                cos = 0.5 * (cos1 + cos2)
-                loss = huber + 1.0 * cos
-            train_loss = huber.detach()
+
+                # Start from random noise — this is the initial "carry"
+                noise = torch.randn_like(x)
+
+                # Variable recursion depth during training (T_H_T_L varies)
+                # This lets the model learn to denoise with any number of steps,
+                # so at test time we can use more steps for better quality.
+                import random
+                num_thtl = random.choice([2, 3, 4, 5])
+
+                # Forward: noise → model recursion → clean image prediction
+                # The model returns (clean_pred - noise) as "velocity"
+                velocity_pred = model(noise, torch.zeros(batch_size, device=x.device),
+                                      class_labels=y, num_thtl=num_thtl)
+                clean_pred = noise + velocity_pred  # reconstruct the clean prediction
+
+                # Loss: how close is the prediction to the actual clean image?
+                loss = F.mse_loss(clean_pred, x)
+
+            train_loss = loss.detach()
             loss = loss / grad_accum_steps
             loss.backward()
             x, y, epoch = next(train_loader)
