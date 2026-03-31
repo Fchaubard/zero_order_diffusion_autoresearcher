@@ -22,18 +22,20 @@ A single shared-weight transformer block, applied recursively through a two-leve
 The TRM-Diffusion architecture has **four distinct recursion loops**, each controlling a different aspect of compute allocation:
 
 ```
-for outer_refinement in range(T_refine):           # Loop 4: Outer refinement (eval-time)
-    for th in range(T_H):                           # Loop 3: H-cycle repetitions
-        for tl in range(T_L):                       # Loop 2: L-cycle repetitions
-            z_L = shared_block(z_L, z_H, c)         # Loop 1: L-module depth (l_layers)
-        z_H = shared_block(z_H, z_L, c)             # H consolidation
+for outer_refinement in range(T_refine):            # Loop 4: Outer refinement (eval-time)
+    for thtl in range(T_H_T_L):                     # Loop 3: H-cycle-L-cycle outer loops 
+        for tl in range(T_L):                       # Loop 1: L-cycle repetitions
+            z_L = shared_block(z_L + z_H + c)         # L consolidation 
+        for th in range(T_H):                       # Loop 2: H-cycle repetitions
+            z_H = shared_block(z_H + z_L)         # H consolidation
 ```
+
 
 | Loop | Variable | Controls | Current Best | Status |
 |------|----------|----------|--------------|--------|
-| **Loop 1**: L-module depth | `l_layers` | # unique layers in shared block | 1 | Fixed (adding layers adds params) |
-| **Loop 2**: L-cycle reps | `T_L` | Working memory iterations per H-cycle | **Asymmetric: 6 first, 1 second** | **KEY FINDING — fully ablated** |
-| **Loop 3**: H-cycle reps | `T_H` | Answer accumulation iterations | 2 (in asym) / 3 (in grid best) | **Partially explored — NEEDS FULL ABLATION** |
+| **Loop 1**: L-cycle reps | `T_L` | # unique layers in shared block | 1 | Fixed (adding layers adds params) |
+| **Loop 2**: H-cycle reps | `T_H` | Working memory iterations per H-cycle | ??? | NOT EXPLORED AT ALL |
+| **Loop 3**: L-H-cycle reps | `T_H_T_L` | Answer accumulation iterations | 2 (in asym) / 3 (in grid best) | **Partially explored — NEEDS FULL ABLATION** |
 | **Loop 4**: Outer refinement | `T_refine` / `eval_mult` | Test-time compute scaling | 2× at eval | **Under-explored — NEEDS ABLATION** |
 
 ### 2.2 Architecture Findings
