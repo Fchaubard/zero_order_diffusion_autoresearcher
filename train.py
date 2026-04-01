@@ -500,8 +500,13 @@ class RecursiveDiT(nn.Module):
             clean_pred = uncond_pred + self.cfg_scale * (clean_pred - uncond_pred)
 
         # Return as "velocity" for ODE solver compatibility with prepare.py
-        # velocity = (where we want to go) - (where we are)
-        return clean_pred - x
+        # The ODE solver does: x_new = x + velocity * dt, with dt = 1/num_steps
+        # We want x to converge to clean_pred over the ODE trajectory.
+        # velocity = (clean_pred - x) / (1 - t) ensures proper convergence:
+        # at t=0 (start): gentle push; at t→1 (end): strong correction to close gap.
+        # During training (t=0), this simplifies to (clean_pred - x).
+        t_scale = t.view(-1, 1, 1, 1)
+        return (clean_pred - x) / (1.0 - t_scale + 1e-5)
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
