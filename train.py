@@ -501,12 +501,16 @@ class RecursiveDiT(nn.Module):
 
         # Return as "velocity" for ODE solver compatibility with prepare.py
         # The ODE solver does: x_new = x + velocity * dt, with dt = 1/num_steps
-        # We want x to converge to clean_pred over the ODE trajectory.
-        # velocity = (clean_pred - x) / (1 - t) ensures proper convergence:
-        # at t=0 (start): gentle push; at t→1 (end): strong correction to close gap.
-        # During training (t=0), this simplifies to (clean_pred - x).
-        t_scale = t.view(-1, 1, 1, 1)
-        return (clean_pred - x) / (1.0 - t_scale + 1e-5)
+        #
+        # CRITICAL: Our model only knows how to denoise PURE NOISE (that's what it's
+        # trained on). The ODE solver calls the model 50 times with increasingly clean
+        # images, but the model wasn't trained on partially-denoised inputs.
+        #
+        # Solution: return velocity = (clean_pred - x) * num_steps so that ONE ODE step
+        # moves x all the way to clean_pred. Subsequent steps just refine from ~clean.
+        # With dt = 1/50: x_new = x + (clean_pred - x) * 50 * (1/50) = clean_pred.
+        # After step 0, x ≈ clean_pred, and further steps do tiny corrections.
+        return (clean_pred - x) * 50.0  # one-shot: get to clean in first ODE step
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
