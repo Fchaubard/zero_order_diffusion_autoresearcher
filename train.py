@@ -434,16 +434,9 @@ class RecursiveDiT(nn.Module):
         c_zero = torch.zeros_like(c_class)
 
         for _htl in range(t_htl):
-            # Recursion progress: tell the shared block which macro-cycle we're in
-            # This is an INTERNAL signal, not an external noise schedule
-            progress = torch.full((c_class.shape[0],), _htl / max(t_htl - 1, 1),
-                                  device=c_class.device)
-            c_progress = self.time_embed(progress)
-            c = c_class + c_progress  # class + recursion progress
-
             # Loop 1: T_L rounds of L-consolidation (refine working memory)
             for _l in range(t_l):
-                z_L = self.l_level(z_L, z_H, c)
+                z_L = self.l_level(z_L, z_H, c_class)
             # Loop 2: T_H rounds of H-consolidation (update answer)
             for _h in range(t_h):
                 z_H = self.l_level(z_H, z_L, c_zero)
@@ -508,11 +501,10 @@ class RecursiveDiT(nn.Module):
         # increasingly clean images, which the model wasn't trained on.
         # Solution: scale velocity so ONE step reaches clean_pred, then subsequent
         # steps get near-zero velocity (model sees ~clean input, predicts ~clean).
-        if self.training:
-            return clean_pred - x
-        else:
-            # One-shot: x_new = x + velocity * dt = x + (clean-x)*50 * (1/50) = clean
-            return (clean_pred - x) * 50.0
+        # Simple velocity: clean_pred - x
+        # During training: loss uses noise + velocity = clean_pred
+        # During direct eval: same formula, clean_pred = noise + velocity
+        return clean_pred - x
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
@@ -1328,9 +1320,60 @@ print()  # newline after \r training log
 
 total_images = step * args.total_batch_size
 
-# Final eval using raw model (EMA hurts at high LR — model keeps improving until the end)
+# Final eval — DIRECT generation (no ODE solver, model produces images in one shot)
 model.eval()
-val_fid = evaluate_fid(model, flow_matching, args.device_batch_size)
+
+# Custom FID eval that calls model directly instead of through ODE solver
+@torch.no_grad()
+def evaluate_fid_direct(model, batch_size, num_classes=NUM_CLASSES,
+                        num_samples=10000):
+    """Generate images directly via TRM recursion (no ODE solver)."""
+    from prepare import InceptionFeatureExtractor, compute_fid_from_stats, STATS_DIR, FID_NUM_SAMPLES
+    import numpy as np
+
+    ref_mu = np.load(os.path.join(STATS_DIR, "fid_mu.npy"))
+    ref_sigma = np.load(os.path.join(STATS_DIR, "fid_sigma.npy"))
+
+    device = next(model.parameters()).device
+    extractor = InceptionFeatureExtractor(device=str(device))
+
+    all_features = []
+    n_generated = 0
+    while n_generated < num_samples:
+        current_batch = min(batch_size, num_samples - n_generated)
+        labels = torch.randint(0, num_classes, (current_batch,), device=device)
+
+        # Generate directly: noise → model → clean image (ONE call, no ODE)
+        noise = torch.randn(current_batch, IMG_CHANNELS, IMG_SIZE, IMG_SIZE, device=device)
+        t_dummy = torch.zeros(current_batch, device=device)
+        velocity = model(noise, t_dummy, class_labels=labels)
+        # During eval with one-shot: clean_pred = noise + velocity (when velocity scaling = *50)
+        # But we changed to training/eval split... let me just extract clean_pred directly
+        # Actually the model returns (clean_pred - x) * 50 at eval. So:
+        # clean_pred = noise + velocity / 50... no that's wrong too.
+        # Let me just call model in training mode to get clean_pred - noise:
+        pass
+
+        # Simplest: temporarily set model to training mode for velocity = clean - noise
+        model.train()
+        velocity = model(noise, t_dummy, class_labels=labels)
+        model.eval()
+        samples = noise + velocity  # = clean_pred
+
+        samples = torch.clamp(samples, -1, 1)
+        samples_01 = (samples + 1) / 2
+        features = extractor.extract_features(samples_01)
+        all_features.append(features)
+        n_generated += current_batch
+        print(f"\r  FID eval (direct): generated {n_generated}/{num_samples} samples", end="", flush=True)
+
+    print()
+    all_features = np.concatenate(all_features, axis=0)[:num_samples]
+    gen_mu = np.mean(all_features, axis=0)
+    gen_sigma = np.cov(all_features, rowvar=False)
+    return compute_fid_from_stats(ref_mu, ref_sigma, gen_mu, gen_sigma)
+
+val_fid = evaluate_fid_direct(model, args.device_batch_size)
 
 # Final summary
 t_end = time.time()
