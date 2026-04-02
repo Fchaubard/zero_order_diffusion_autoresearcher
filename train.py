@@ -486,7 +486,7 @@ class RecursiveDiT(nn.Module):
         # We seed from x so that the same input noise produces the same output
         # (important for ODE solver at eval which calls forward multiple times)
         z_H = self.patch_embed(x) + self.pos_embed  # carry seeded from input noise
-        z_L = torch.randn(B, N, C, device=device)   # fresh working memory
+        z_L = self.z_L_init.expand(B, N, -1)          # fixed working memory init (deterministic)
 
         # The TRM recursion IS the denoiser — no noise schedules allowed!
         clean_pred = self._recurse(z_H, z_L, c, num_thtl=num_thtl)
@@ -495,7 +495,7 @@ class RecursiveDiT(nn.Module):
             # CFG: also run unconditional and combine
             c_uncond = self.time_embed(torch.zeros(B, device=device))
             z_H_u = self.patch_embed(x) + self.pos_embed
-            z_L_u = torch.randn(B, N, C, device=device)
+            z_L_u = self.z_L_init.expand(B, N, -1)
             uncond_pred = self._recurse(z_H_u, z_L_u, c_uncond, num_thtl=num_thtl)
             clean_pred = uncond_pred + self.cfg_scale * (clean_pred - uncond_pred)
 
