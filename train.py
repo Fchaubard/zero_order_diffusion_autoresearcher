@@ -412,35 +412,39 @@ class RecursiveDiT(nn.Module):
         x = self.unpatchify(x)
         return x
 
-    def _recurse(self, z_H, z_L, c, num_thtl=None):
+    def _recurse(self, z_H, z_L, c_class, num_thtl=None):
         """
         TRM recursive refinement — the recursion IS the denoiser.
-        NO noise schedules. NO teacher forcing.
+        NO external noise schedules. NO teacher forcing.
 
         z_H and z_L start from random noise and get refined to produce a clean image.
+        Each macro-cycle corresponds to a denoising "step" — the model receives a
+        progress signal (via time_embed) telling it which stage of denoising it's in.
+        This is NOT an external noise schedule — it's an internal recursion progress
+        indicator that helps the shared block adapt its behavior at each stage.
 
-        Following TRM: conditioning (c) is only used for L-updates (working memory).
-        H-updates are UNCONDITIONED — z_H is a pure accumulator that reads z_L.
-
-        The four loops:
-          Loop 3 (T_H_T_L): macro-cycles of L-refine then H-consolidate
-            Loop 1 (T_L): L-module reps — conditioned on c (task-specific thinking)
-            Loop 2 (T_H): H-module reps — NO conditioning (pure aggregation)
+        Following TRM: H-updates are UNCONDITIONED (pure accumulator).
+        L-updates receive class conditioning AND recursion progress.
         """
         t_htl = num_thtl if num_thtl is not None else self.config.h_cycles
         t_l = self.config.l_cycles
         t_h = 1  # TODO: ablate T_H > 1
 
-        # Zero conditioning for H-updates (TRM: z_H doesn't see task conditioning)
-        c_zero = torch.zeros_like(c)
+        # Zero conditioning for H-updates
+        c_zero = torch.zeros_like(c_class)
 
         for _htl in range(t_htl):
+            # Recursion progress: tell the shared block which macro-cycle we're in
+            # This is an INTERNAL signal, not an external noise schedule
+            progress = torch.full((c_class.shape[0],), _htl / max(t_htl - 1, 1),
+                                  device=c_class.device)
+            c_progress = self.time_embed(progress)
+            c = c_class + c_progress  # class + recursion progress
+
             # Loop 1: T_L rounds of L-consolidation (refine working memory)
-            # CONDITIONED on c — z_L needs to know what class to generate
             for _l in range(t_l):
                 z_L = self.l_level(z_L, z_H, c)
             # Loop 2: T_H rounds of H-consolidation (update answer)
-            # UNCONDITIONED — z_H is a pure accumulator, just reads z_L
             for _h in range(t_h):
                 z_H = self.l_level(z_H, z_L, c_zero)
 
@@ -470,47 +474,45 @@ class RecursiveDiT(nn.Module):
         N = self.patch_embed.num_patches
         C = self.config.n_embd
 
-        # Conditioning: class labels only. Time embedding gets zeros (no schedule).
-        # We keep time_embed in the architecture for compatibility but feed it zeros.
-        c = self.time_embed(torch.zeros(B, device=device))
+        # Conditioning: class labels only. Recursion progress is added inside _recurse.
+        c_class = torch.zeros(B, self.config.n_embd, device=device)
         if class_labels is not None:
             label_emb = self.label_embed(class_labels)
             if self.training and self.p_uncond > 0:
                 drop_mask = torch.rand(B, device=device) < self.p_uncond
                 label_emb = label_emb * (~drop_mask).float().unsqueeze(-1)
-            c = c + label_emb
+            c_class = c_class + label_emb
 
-        # Initialize the carry from random noise — this is where variety comes from.
-        # z_H = "answer accumulator" — starts as noise, refined to clean image
-        # z_L = "working memory" — scratchpad for intermediate computation
-        # We seed from x so that the same input noise produces the same output
-        # (important for ODE solver at eval which calls forward multiple times)
+        # Initialize the carry from input — this is where variety comes from.
         z_H = self.patch_embed(x) + self.pos_embed  # carry seeded from input noise
-        z_L = self.z_L_init.expand(B, N, -1)          # fixed working memory init (deterministic)
+        z_L = self.z_L_init.expand(B, N, -1)        # fixed working memory init
 
-        # The TRM recursion IS the denoiser — no noise schedules allowed!
-        clean_pred = self._recurse(z_H, z_L, c, num_thtl=num_thtl)
+        # The TRM recursion IS the denoiser
+        clean_pred = self._recurse(z_H, z_L, c_class, num_thtl=num_thtl)
 
         if not self.training and self.cfg_scale > 1.0 and class_labels is not None:
             # CFG: also run unconditional and combine
-            c_uncond = self.time_embed(torch.zeros(B, device=device))
+            c_uncond = torch.zeros(B, self.config.n_embd, device=device)
             z_H_u = self.patch_embed(x) + self.pos_embed
             z_L_u = self.z_L_init.expand(B, N, -1)
             uncond_pred = self._recurse(z_H_u, z_L_u, c_uncond, num_thtl=num_thtl)
             clean_pred = uncond_pred + self.cfg_scale * (clean_pred - uncond_pred)
 
         # Return as "velocity" for ODE solver compatibility with prepare.py
-        # The ODE solver does: x_new = x + velocity * dt, with dt = 1/num_steps
         #
-        # CRITICAL: Our model only knows how to denoise PURE NOISE (that's what it's
-        # trained on). The ODE solver calls the model 50 times with increasingly clean
-        # images, but the model wasn't trained on partially-denoised inputs.
+        # During TRAINING (t=0): velocity = clean_pred - noise
+        # The training loop does: clean_pred = noise + velocity = clean_pred. Correct.
         #
-        # Solution: return velocity = (clean_pred - x) * num_steps so that ONE ODE step
-        # moves x all the way to clean_pred. Subsequent steps just refine from ~clean.
-        # With dt = 1/50: x_new = x + (clean_pred - x) * 50 * (1/50) = clean_pred.
-        # After step 0, x ≈ clean_pred, and further steps do tiny corrections.
-        return (clean_pred - x) * 50.0  # one-shot: get to clean in first ODE step
+        # During EVAL (ODE solver, 50 steps with dt=1/50):
+        # The model only knows how to denoise PURE NOISE. The ODE solver feeds
+        # increasingly clean images, which the model wasn't trained on.
+        # Solution: scale velocity so ONE step reaches clean_pred, then subsequent
+        # steps get near-zero velocity (model sees ~clean input, predicts ~clean).
+        if self.training:
+            return clean_pred - x
+        else:
+            # One-shot: x_new = x + velocity * dt = x + (clean-x)*50 * (1/50) = clean
+            return (clean_pred - x) * 50.0
 
 # ---------------------------------------------------------------------------
 # Triton Kernels (SPSA bit-packed perturbations)
