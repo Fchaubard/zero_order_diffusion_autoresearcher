@@ -1,1 +1,6 @@
 garbage/
+neurips_paper/.ipynb_checkpoints/
+__pycache__/
+wandb/
+run.log
+.ipynb_checkpoints/
