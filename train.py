@@ -1154,22 +1154,35 @@ while True:
             with autocast_ctx:
                 batch_size = x.shape[0]
 
-                # Start from random noise — this is the initial "carry"
+                # ============================================================
+                # NOISE CURRICULUM: start easy, get harder over training
+                #
+                # noise_level goes from 0 → 1 over the training budget.
+                # carry = (1 - noise_level) * clean_image + noise_level * noise
+                #
+                # Early training: carry ≈ clean image (easy correction task)
+                #   → model learns what sharp images look like, no mode collapse
+                # Late training: carry ≈ pure noise (full generation task)
+                #   → model uses its learned priors to generate from scratch
+                #
+                # This is NOT a noise schedule — there is no timestep conditioning.
+                # The noise level is a CURRICULUM parameter that changes over
+                # training time. At test time, always start from pure noise.
+                # ============================================================
+                noise_level = min(total_training_time / args.time_budget, 1.0)  # 0 → 1 over training
                 noise = torch.randn_like(x)
+                carry = (1.0 - noise_level) * x + noise_level * noise
 
-                # Variable recursion depth during training (T_H_T_L varies)
-                # This lets the model learn to denoise with any number of steps,
-                # so at test time we can use more steps for better quality.
+                # Variable recursion depth during training
                 import random
                 num_thtl = random.choice([2, 3, 4, 5])
 
-                # Forward: noise → model recursion → clean image prediction
-                # The model returns (clean_pred - noise) as "velocity"
-                velocity_pred = model(noise, torch.zeros(batch_size, device=x.device),
+                # Forward: carry → model recursion → clean image prediction
+                velocity_pred = model(carry, torch.zeros(batch_size, device=x.device),
                                       class_labels=y, num_thtl=num_thtl)
-                clean_pred = noise + velocity_pred  # reconstruct the clean prediction
+                clean_pred = carry + velocity_pred
 
-                # Loss: how close is the prediction to the actual clean image?
+                # Loss: reconstruct the clean image
                 loss = F.mse_loss(clean_pred, x)
 
             train_loss = loss.detach()
