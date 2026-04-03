@@ -143,3 +143,4 @@ H=9    43.01     50.26     72.72
 | Phase 4 | 8 | 160 | TODO |
 | Phase 5 | 3 | 60 | TODO |
 | **Total** | **~898** | **~1620** | — |
+# Best schedule-free: FID 141 (curriculum cap=0.8 + 2-pass eval)
