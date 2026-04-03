@@ -32,7 +32,7 @@ To set up a new experiment, work with the user to:
    Next Ideas to Try: `<if this run sparks further ideas to research, say so here and then add new Idea_id blocks to this md file>`
    ---
    
-8. **Ensure wandb is logged in**: Ensure you are logged in to wandb via this api key: `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`
+8. **Ensure wandb is logged in**: Ensure you are logged in to wandb via this api key: `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`
 9. **Confirm and go**: Confirm setup looks good.
 
 Once you get confirmation, kick off the experimentation. 
