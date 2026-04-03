@@ -145,3 +145,4 @@ H=9    43.01     50.26     72.72
 | **Total** | **~898** | **~1620** | — |
 # Best schedule-free: FID 141 (curriculum cap=0.8 + 2-pass eval)
 # Contractive training: multi-pass train hurts, 2-pass eval helps. Best FID 138.
+# Per-sample noise (v21): FID 279-371. Curriculum still best at 138.
